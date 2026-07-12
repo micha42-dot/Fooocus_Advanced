@@ -1,3 +1,18 @@
+# Fooocus Advanced
+
+I consider Fooocus to be one of the most beautiful and elegant text-to-image tools, and I still regard SDXL as a relevant model family because it is fast and continues to be maintained by a vibrant community. I have therefore decided to continue maintaining Fooocus mashb1t's 1-Up Edition and keeping it alive, as far as I am able. Above all, so that others can build on it. 
+
+I’m cheekily calling it simply Fooocus Advanced.
+
+## New Features
+
+### Tiled SDXL Detail Upscale
+
+This fork adds a new Tiled SDXL Detail Upscale mode for high-resolution image refinement. The feature first performs the regular 2x upscale, then runs SDXL img2img over overlapping 1024px tiles with soft blending between tiles. This allows larger images to receive additional SDXL detail without processing the full resolution as one huge latent, reducing VRAM pressure while preserving a more coherent final image.
+
+The mode is available as Upscale (Tiled SDXL Detail 2x) in the Upscale or Variation menu. It is slower than the standard upscale because each tile is sampled separately, but it can produce cleaner fine detail on large outputs
+
+
 # Fooocus - mashb1t's 1-Up Edition
 
 The purpose of this fork is to add new features / fix bugs and contribute back to [Fooocus](https://github.com/lllyasviel/Fooocus).
