@@ -21,6 +21,7 @@ class AsyncTask:
         self.processing = False
 
         self.performance_loras = []
+        self.tiled_upscale_tile_count = 1
 
         if len(args) == 0:
             return
@@ -198,6 +199,10 @@ def worker():
     from modules.util import (remove_empty_str, HWC3, resize_image, get_image_shape_ceil, set_image_shape_ceil,
                               get_shape_ceil, resample_image, erode_or_dilate, parse_lora_references_from_prompt,
                               apply_wildcards)
+    from modules.tiled_upscale import (DEFAULT_TILE_OVERLAP, DEFAULT_TILE_SIZE, TILED_DETAIL_LATENT_KEY,
+                                       estimate_tiled_detail_tile_count, get_tile_positions,
+                                       get_tiled_detail_tile_count, get_upscale_factor, is_tiled_detail_upscale,
+                                       make_blend_mask)
     from modules.upscaler import perform_upscale
     from modules.flags import Performance
     from modules.meta_parser import get_metadata_parser
@@ -278,43 +283,165 @@ def worker():
         async_task.results = async_task.results + [wall]
         return
 
+    def is_tiled_detail_latent(latent):
+        return isinstance(latent, dict) and TILED_DETAIL_LATENT_KEY in latent
+
+    def get_sampling_step_count(steps, latent):
+        if is_tiled_detail_latent(latent):
+            image = latent[TILED_DETAIL_LATENT_KEY]
+            height, width = image.shape[:2]
+            return steps * get_tiled_detail_tile_count(height, width)
+        return steps
+
+    def get_padded_detail_tile(image, y, x, tile_size):
+        image_height, image_width = image.shape[:2]
+        tile_height = min(tile_size, image_height - y)
+        tile_width = min(tile_size, image_width - x)
+        tile = image[y:y + tile_height, x:x + tile_width]
+
+        if tile_height == tile_size and tile_width == tile_size:
+            return np.ascontiguousarray(tile.copy()), tile_height, tile_width
+
+        pad_height = tile_size - tile_height
+        pad_width = tile_size - tile_width
+        padded = np.pad(tile, [[0, pad_height], [0, pad_width], [0, 0]], mode='edge')
+        return np.ascontiguousarray(padded.copy()), tile_height, tile_width
+
+    def process_tiled_detail_upscale(all_steps, async_task, base_progress, current_task_id, denoising_strength,
+                                     final_scheduler_name, initial_latent, steps, switch, positive_cond,
+                                     negative_cond, task, preparation_steps, total_count):
+        image = initial_latent[TILED_DETAIL_LATENT_KEY]
+        image_height, image_width = image.shape[:2]
+        y_positions = get_tile_positions(image_height, DEFAULT_TILE_SIZE, DEFAULT_TILE_OVERLAP)
+        x_positions = get_tile_positions(image_width, DEFAULT_TILE_SIZE, DEFAULT_TILE_OVERLAP)
+        total_tiles = len(y_positions) * len(x_positions)
+
+        print(f'[Tiled Detail Upscale] Processing {total_tiles} tiles at {DEFAULT_TILE_SIZE}px '
+              f'with {DEFAULT_TILE_OVERLAP}px overlap.')
+
+        accumulator = np.zeros((image_height, image_width, 3), dtype=np.float32)
+        weights = np.zeros((image_height, image_width, 1), dtype=np.float32)
+        completed_steps = 0
+        tile_index = 0
+        progress_scale = (100 - preparation_steps) / float(all_steps)
+
+        candidate_vae, _ = pipeline.get_candidate_vae(
+            steps=steps,
+            switch=switch,
+            denoise=denoising_strength,
+            refiner_swap_method=async_task.refiner_swap_method
+        )
+
+        for y in y_positions:
+            for x in x_positions:
+                if async_task.last_stop is not False:
+                    ldm_patched.modules.model_management.interrupt_current_processing()
+
+                tile_index += 1
+                tile, tile_height, tile_width = get_padded_detail_tile(image, y, x, DEFAULT_TILE_SIZE)
+                progressbar(async_task, int(base_progress + progress_scale * completed_steps),
+                            f'Tiled detail tile {tile_index}/{total_tiles} ...')
+
+                initial_pixels = core.numpy_to_pytorch(tile)
+                tile_latent = core.encode_vae(vae=candidate_vae, pixels=initial_pixels)
+                tile_seed = (task['task_seed'] + tile_index) % (constants.MAX_SEED + 1)
+
+                def tile_callback(step, x0, latent_x, total_steps, preview):
+                    preview_progress = int(base_progress + progress_scale * (completed_steps + step + 1))
+                    async_task.yields.append(['preview', (
+                        preview_progress,
+                        f'Tiled detail tile {tile_index}/{total_tiles}, step {step + 1}/{total_steps}, '
+                        f'image {current_task_id + 1}/{total_count} ...',
+                        preview
+                    )])
+
+                tile_result = pipeline.process_diffusion(
+                    positive_cond=positive_cond,
+                    negative_cond=negative_cond,
+                    steps=steps,
+                    switch=switch,
+                    width=DEFAULT_TILE_SIZE,
+                    height=DEFAULT_TILE_SIZE,
+                    image_seed=tile_seed,
+                    callback=tile_callback,
+                    sampler_name=async_task.sampler_name,
+                    scheduler_name=final_scheduler_name,
+                    latent=tile_latent,
+                    denoise=denoising_strength,
+                    tiled=False,
+                    cfg_scale=async_task.cfg_scale,
+                    refiner_swap_method=async_task.refiner_swap_method,
+                    disable_preview=async_task.disable_preview
+                )[0]
+
+                tile_result = tile_result[:tile_height, :tile_width].astype(np.float32)
+                blend_mask = make_blend_mask(
+                    tile_height=tile_height,
+                    tile_width=tile_width,
+                    y=y,
+                    x=x,
+                    image_height=image_height,
+                    image_width=image_width,
+                    overlap=DEFAULT_TILE_OVERLAP
+                )[:, :, None]
+
+                accumulator[y:y + tile_height, x:x + tile_width] += tile_result * blend_mask
+                weights[y:y + tile_height, x:x + tile_width] += blend_mask
+
+                completed_steps += steps
+                del initial_pixels, tile, tile_latent, tile_result
+
+        result = accumulator / np.maximum(weights, 1e-6)
+        result = np.clip(result, 0, 255).astype(np.uint8)
+        return [result], int(base_progress + progress_scale * completed_steps)
+
     def process_task(all_steps, async_task, callback, controlnet_canny_path, controlnet_cpds_path, current_task_id,
                      denoising_strength, final_scheduler_name, goals, initial_latent, steps, switch, positive_cond,
                      negative_cond, task, loras, tiled, use_expansion, width, height, base_progress, preparation_steps,
                      total_count, show_intermediate_results, persist_image=True):
         if async_task.last_stop is not False:
             ldm_patched.modules.model_management.interrupt_current_processing()
-        if 'cn' in goals:
-            for cn_flag, cn_path in [
-                (flags.cn_canny, controlnet_canny_path),
-                (flags.cn_cpds, controlnet_cpds_path)
-            ]:
-                for cn_img, cn_stop, cn_weight in async_task.cn_tasks[cn_flag]:
-                    positive_cond, negative_cond = core.apply_controlnet(
-                        positive_cond, negative_cond,
-                        pipeline.loaded_ControlNets[cn_path], cn_img, cn_weight, 0, cn_stop)
-        imgs = pipeline.process_diffusion(
-            positive_cond=positive_cond,
-            negative_cond=negative_cond,
-            steps=steps,
-            switch=switch,
-            width=width,
-            height=height,
-            image_seed=task['task_seed'],
-            callback=callback,
-            sampler_name=async_task.sampler_name,
-            scheduler_name=final_scheduler_name,
-            latent=initial_latent,
-            denoise=denoising_strength,
-            tiled=tiled,
-            cfg_scale=async_task.cfg_scale,
-            refiner_swap_method=async_task.refiner_swap_method,
-            disable_preview=async_task.disable_preview
-        )
+
+        if is_tiled_detail_latent(initial_latent):
+            if 'cn' in goals:
+                print('[Tiled Detail Upscale] ControlNet inputs are skipped for tiled detail upscale.')
+            imgs, current_progress = process_tiled_detail_upscale(
+                all_steps, async_task, base_progress, current_task_id, denoising_strength, final_scheduler_name,
+                initial_latent, steps, switch, positive_cond, negative_cond, task, preparation_steps, total_count)
+        else:
+            if 'cn' in goals:
+                for cn_flag, cn_path in [
+                    (flags.cn_canny, controlnet_canny_path),
+                    (flags.cn_cpds, controlnet_cpds_path)
+                ]:
+                    for cn_img, cn_stop, cn_weight in async_task.cn_tasks[cn_flag]:
+                        positive_cond, negative_cond = core.apply_controlnet(
+                            positive_cond, negative_cond,
+                            pipeline.loaded_ControlNets[cn_path], cn_img, cn_weight, 0, cn_stop)
+            imgs = pipeline.process_diffusion(
+                positive_cond=positive_cond,
+                negative_cond=negative_cond,
+                steps=steps,
+                switch=switch,
+                width=width,
+                height=height,
+                image_seed=task['task_seed'],
+                callback=callback,
+                sampler_name=async_task.sampler_name,
+                scheduler_name=final_scheduler_name,
+                latent=initial_latent,
+                denoise=denoising_strength,
+                tiled=tiled,
+                cfg_scale=async_task.cfg_scale,
+                refiner_swap_method=async_task.refiner_swap_method,
+                disable_preview=async_task.disable_preview
+            )
+
         del positive_cond, negative_cond  # Save memory
         if inpaint_worker.current_task is not None:
             imgs = [inpaint_worker.current_task.post_process(x) for x in imgs]
-        current_progress = int(base_progress + (100 - preparation_steps) / float(all_steps) * steps)
+        current_progress = int(base_progress + (100 - preparation_steps) / float(all_steps) *
+                               get_sampling_step_count(steps, initial_latent))
         if modules.config.default_black_out_nsfw or async_task.black_out_nsfw:
             progressbar(async_task, current_progress, 'Checking for NSFW content ...')
             imgs = default_censor(imgs)
@@ -573,17 +700,14 @@ def worker():
 
     def apply_upscale(async_task, uov_input_image, uov_method, switch, current_progress, advance_progress=False):
         H, W, C = uov_input_image.shape
+        async_task.tiled_upscale_tile_count = 1
+        use_tiled_detail = is_tiled_detail_upscale(uov_method)
         if advance_progress:
             current_progress += 1
         progressbar(async_task, current_progress, f'Upscaling image from {str((W, H))} ...')
         uov_input_image = perform_upscale(uov_input_image)
         print(f'Image upscaled.')
-        if '1.5x' in uov_method:
-            f = 1.5
-        elif '2x' in uov_method:
-            f = 2.0
-        else:
-            f = 1.0
+        f = get_upscale_factor(uov_method)
         shape_ceil = get_shape_ceil(H * f, W * f)
         if shape_ceil < 1024:
             print(f'[Upscale] Image is resized because it is too small.')
@@ -594,7 +718,7 @@ def worker():
         image_is_super_large = shape_ceil > 2800
         if 'fast' in uov_method:
             direct_return = True
-        elif image_is_super_large:
+        elif image_is_super_large and not use_tiled_detail:
             print('Image is too large. Directly returned the SR image. '
                   'Usually directly return SR image at 4K resolution '
                   'yields better results than SDXL diffusion.')
@@ -605,9 +729,19 @@ def worker():
             return direct_return, uov_input_image, None, None, None, None, None, current_progress
 
         tiled = True
-        denoising_strength = 0.382
+        denoising_strength = 0.28 if use_tiled_detail else 0.382
         if async_task.overwrite_upscale_strength > 0:
             denoising_strength = async_task.overwrite_upscale_strength
+
+        if use_tiled_detail:
+            height, width = uov_input_image.shape[:2]
+            async_task.tiled_upscale_tile_count = get_tiled_detail_tile_count(height, width)
+            print(f'[Tiled Detail Upscale] Final resolution is {str((width, height))}. '
+                  f'Tiles: {async_task.tiled_upscale_tile_count}.')
+            return direct_return, uov_input_image, denoising_strength, {
+                TILED_DETAIL_LATENT_KEY: uov_input_image
+            }, tiled, width, height, current_progress
+
         initial_pixels = core.numpy_to_pytorch(uov_input_image)
         if advance_progress:
             current_progress += 1
@@ -1069,7 +1203,9 @@ def worker():
                     print('User stopped')
                     exception_result = 'break'
             finally:
-                done_steps_upscaling += steps
+                step_multiplier = async_task.tiled_upscale_tile_count \
+                    if is_tiled_detail_upscale(async_task.enhance_uov_method) else 1
+                done_steps_upscaling += steps * step_multiplier
         return current_task_id, done_steps_inpainting, done_steps_upscaling, img, exception_result
 
     @torch.no_grad()
@@ -1238,17 +1374,21 @@ def worker():
             yield_result(async_task, async_task.enhance_input_image, current_progress, async_task.black_out_nsfw, False,
                          async_task.disable_intermediate_results)
 
-        all_steps = steps * async_task.image_number
+        all_steps = get_sampling_step_count(steps, initial_latent) * async_task.image_number
 
         if async_task.enhance_checkbox and async_task.enhance_uov_method != flags.disabled.casefold():
             enhance_upscale_steps = async_task.performance_selection.steps()
+            enhance_upscale_step_multiplier = 1
             if 'upscale' in async_task.enhance_uov_method:
                 if 'fast' in async_task.enhance_uov_method:
                     enhance_upscale_steps = 0
                 else:
                     enhance_upscale_steps = async_task.performance_selection.steps_uov()
+                    if is_tiled_detail_upscale(async_task.enhance_uov_method):
+                        enhance_upscale_step_multiplier = estimate_tiled_detail_tile_count(
+                            height, width, get_upscale_factor(async_task.enhance_uov_method))
             enhance_upscale_steps, _, _, _ = apply_overrides(async_task, enhance_upscale_steps, height, width)
-            enhance_upscale_steps_total = async_task.image_number * enhance_upscale_steps
+            enhance_upscale_steps_total = async_task.image_number * enhance_upscale_steps * enhance_upscale_step_multiplier
             all_steps += enhance_upscale_steps_total
 
         if async_task.enhance_checkbox and len(async_task.enhance_ctrls) != 0:
@@ -1304,7 +1444,9 @@ def worker():
                                                                  async_task.image_number, show_intermediate_results,
                                                                  persist_image)
 
-                current_progress = int(preparation_steps + (100 - preparation_steps) / float(all_steps) * async_task.steps * (current_task_id + 1))
+                current_progress = int(preparation_steps + (100 - preparation_steps) / float(all_steps) *
+                                       get_sampling_step_count(async_task.steps, initial_latent) *
+                                       (current_task_id + 1))
                 images_to_enhance += imgs
 
             except ldm_patched.modules.model_management.InterruptProcessingException:
