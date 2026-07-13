@@ -43,6 +43,8 @@ Keep the folder names exactly as shown. The spelling `python_embeded` is intenti
 
 Start Fooocus Advanced with `run.bat`. On its first launch, Fooocus checks the bundled Python environment, installs missing dependencies, and may download the default model. Use `run_no_download.bat` to prevent all automatic model downloads; in that mode, place an SDXL checkpoint in `Fooocus/models/checkpoints` before starting.
 
+## Download [Fooocus Advanced v0.2.5](https://github.com/micha42-dot/Fooocus_Advanced/releases/tag/v0.2.5)
+
 
 ---
 
