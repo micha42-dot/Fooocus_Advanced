@@ -129,7 +129,10 @@ def sample_hacked(model, noise, positive, negative, cfg, device, sampler, sigmas
         negative_refiner = encode_model_conds(current_refiner.model.extra_conds, negative_refiner, noise, device, "negative", latent_image=latent_image, denoise_mask=denoise_mask)
 
     def refiner_switch():
+        from modules.patch import reset_guidance_state
+
         cleanup_additional_models(set(get_models_from_cond(positive, "control") + get_models_from_cond(negative, "control")))
+        reset_guidance_state()
 
         extra_args["cond"] = positive_refiner
         extra_args["uncond"] = negative_refiner

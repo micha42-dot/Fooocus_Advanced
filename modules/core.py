@@ -3,12 +3,17 @@ import einops
 import torch
 import numpy as np
 
+import args_manager
 import ldm_patched.modules.model_management
 import ldm_patched.modules.model_detection
 import ldm_patched.modules.model_patcher
 import ldm_patched.modules.utils
 import ldm_patched.modules.controlnet
 import modules.sample_hijack
+import modules.performance
+import modules.performance_metrics
+from modules.unet_cache import reset_unet_cache
+from modules.latent_cache import get_latent_cache
 import ldm_patched.modules.samplers
 import ldm_patched.modules.latent_formats
 
@@ -146,6 +151,8 @@ def apply_controlnet(positive, negative, control_net, image, strength, start_per
 def load_model(ckpt_filename, vae_filename=None):
     unet, clip, vae, vae_filename, clip_vision = load_checkpoint_guess_config(ckpt_filename, embedding_directory=path_embeddings,
                                                                 vae_filename_param=vae_filename)
+    configure_unet = getattr(modules.performance, 'configure_unet', modules.performance.compile_unet)
+    configure_unet(unet)
     return StableDiffusionModel(unet=unet, clip=clip, vae=vae, clip_vision=clip_vision, filename=ckpt_filename, vae_filename=vae_filename)
 
 
@@ -167,15 +174,22 @@ def decode_vae(vae, latent_image, tiled=False):
 @torch.no_grad()
 @torch.inference_mode()
 def encode_vae(vae, pixels, tiled=False):
+    latent_cache = get_latent_cache()
     if tiled:
-        return opVAEEncodeTiled.encode(pixels=pixels, vae=vae, tile_size=512)[0]
+        samples = latent_cache.get_or_encode(
+            vae, pixels, 'tiled-512',
+            lambda: opVAEEncodeTiled.encode(pixels=pixels, vae=vae, tile_size=512)[0]['samples'])
     else:
-        return opVAEEncode.encode(pixels=pixels, vae=vae)[0]
+        samples = latent_cache.get_or_encode(
+            vae, pixels, 'regular',
+            lambda: opVAEEncode.encode(pixels=pixels, vae=vae)[0]['samples'])
+    return {'samples': samples}
 
 
 @torch.no_grad()
 @torch.inference_mode()
 def encode_vae_inpaint(vae, pixels, mask):
+    latent_cache = get_latent_cache()
     assert mask.ndim == 3 and pixels.ndim == 4
     assert mask.shape[-1] == pixels.shape[-2]
     assert mask.shape[-2] == pixels.shape[-3]
@@ -183,7 +197,7 @@ def encode_vae_inpaint(vae, pixels, mask):
     w = mask.round()[..., None]
     pixels = pixels * (1 - w) + 0.5 * w
 
-    latent = vae.encode(pixels)
+    latent = latent_cache.get_or_encode(vae, pixels, 'inpaint', lambda: vae.encode(pixels))
     B, C, H, W = latent.shape
 
     latent_mask = mask[:, None, :, :]
@@ -265,7 +279,8 @@ def get_previewer(model):
 def ksampler(model, positive, negative, latent, seed=None, steps=30, cfg=7.0, sampler_name='dpmpp_2m_sde_gpu',
              scheduler='karras', denoise=1.0, disable_noise=False, start_step=None, last_step=None,
              force_full_denoise=False, callback_function=None, refiner=None, refiner_switch=-1,
-             previewer_start=None, previewer_end=None, sigmas=None, noise_mean=None, disable_preview=False):
+             previewer_start=None, previewer_end=None, sigmas=None, noise_mean=None, disable_preview=False,
+             deep_cache_profile=None):
 
     if sigmas is not None:
         sigmas = sigmas.clone().to(ldm_patched.modules.model_management.get_torch_device())
@@ -274,6 +289,13 @@ def ksampler(model, positive, negative, latent, seed=None, steps=30, cfg=7.0, sa
 
     if disable_noise:
         noise = torch.zeros(latent_image.size(), dtype=latent_image.dtype, layout=latent_image.layout, device="cpu")
+    elif isinstance(seed, (list, tuple)):
+        if len(seed) != latent_image.shape[0]:
+            raise ValueError('The number of seeds must match the latent batch size.')
+        noise = torch.cat([
+            ldm_patched.modules.sample.prepare_noise(latent_image[index:index + 1], int(item_seed))
+            for index, item_seed in enumerate(seed)
+        ], dim=0)
     else:
         batch_inds = latent["batch_index"] if "batch_index" in latent else None
         noise = ldm_patched.modules.sample.prepare_noise(latent_image, seed, batch_inds)
@@ -305,6 +327,16 @@ def ksampler(model, positive, negative, latent, seed=None, steps=30, cfg=7.0, sa
     modules.sample_hijack.current_refiner = refiner
     modules.sample_hijack.refiner_switch_step = refiner_switch
     ldm_patched.modules.samplers.sample = modules.sample_hijack.sample_hacked
+    from modules.patch import reset_guidance_state
+
+    reset_guidance_state()
+    if deep_cache_profile is None:
+        deep_cache_profile = getattr(args_manager.args, 'unet_cache', 'off')
+    caches = [reset_unet_cache(model, profile_name=deep_cache_profile, steps=steps)]
+    if refiner is not None:
+        refiner_cache = reset_unet_cache(refiner, profile_name=deep_cache_profile, steps=steps)
+        if refiner_cache not in caches:
+            caches.append(refiner_cache)
 
     try:
         samples = ldm_patched.modules.sample.sample(model,
@@ -321,6 +353,15 @@ def ksampler(model, positive, negative, latent, seed=None, steps=30, cfg=7.0, sa
         out["samples"] = samples
     finally:
         modules.sample_hijack.current_refiner = None
+        for cache in caches:
+            if cache is None:
+                continue
+            stats = cache.stats()
+            modules.performance_metrics.record_counter('deep_cache_hits', stats['hits'])
+            modules.performance_metrics.record_counter('deep_cache_misses', stats['misses'])
+            modules.performance_metrics.record_counter('deep_cache_bypasses', stats['bypasses'])
+            if stats['hits'] > 0:
+                print(f'[Performance] DeepCache: {stats["hits"]} reused steps, {stats["misses"]} refreshed steps.')
 
     return out
 

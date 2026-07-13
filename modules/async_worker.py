@@ -2,6 +2,12 @@ import threading
 
 from extras.inpaint_mask import generate_mask_from_image, SAMOptions
 from modules.patch import PatchSettings, patch_settings, patch_all
+from modules.guidance import (
+    GUIDANCE_CFGPP,
+    GUIDANCE_STANDARD,
+    normalize_guidance_mode,
+    supports_cfgpp_sampler,
+)
 import modules.config
 
 patch_all()
@@ -44,6 +50,8 @@ class AsyncTask:
         self.read_wildcards_in_order = args.pop()
         self.sharpness = args.pop()
         self.cfg_scale = args.pop()
+        self.guidance_mode = args.pop()
+        self.deep_cache_profile = args.pop()
         self.base_model_name = args.pop()
         self.refiner_model_name = args.pop()
         self.refiner_switch = args.pop()
@@ -191,6 +199,8 @@ def worker():
     import extras.ip_adapter as ip_adapter
     import extras.face_crop
     import fooocus_version
+    import args_manager
+    import modules.performance_metrics as performance_metrics
 
     from extras.censor import default_censor
     from modules.sdxl_styles import apply_style, get_random_style, fooocus_expansion, apply_arrays, random_style_name
@@ -201,8 +211,8 @@ def worker():
                               apply_wildcards)
     from modules.tiled_upscale import (DEFAULT_TILE_OVERLAP, DEFAULT_TILE_SIZE, TILED_DETAIL_LATENT_KEY,
                                        estimate_tiled_detail_tile_count, get_tile_positions,
-                                       get_tiled_detail_tile_count, get_upscale_factor, is_tiled_detail_upscale,
-                                       make_blend_mask)
+                                       get_tiled_detail_batch_size, get_tiled_detail_tile_count,
+                                       get_upscale_factor, is_tiled_detail_upscale, make_blend_mask)
     from modules.upscaler import perform_upscale
     from modules.flags import Performance
     from modules.meta_parser import get_metadata_parser
@@ -314,10 +324,16 @@ def worker():
         image_height, image_width = image.shape[:2]
         y_positions = get_tile_positions(image_height, DEFAULT_TILE_SIZE, DEFAULT_TILE_OVERLAP)
         x_positions = get_tile_positions(image_width, DEFAULT_TILE_SIZE, DEFAULT_TILE_OVERLAP)
-        total_tiles = len(y_positions) * len(x_positions)
+        tile_positions = [(y, x) for y in y_positions for x in x_positions]
+        total_tiles = len(tile_positions)
+        tile_batch_size = get_tiled_detail_batch_size(
+            total_vram_mb=ldm_patched.modules.model_management.total_vram,
+            requested=max(0, getattr(args_manager.args, 'tiled_upscale_batch_size', 0)),
+            total_tiles=total_tiles
+        )
 
         print(f'[Tiled Detail Upscale] Processing {total_tiles} tiles at {DEFAULT_TILE_SIZE}px '
-              f'with {DEFAULT_TILE_OVERLAP}px overlap.')
+              f'with {DEFAULT_TILE_OVERLAP}px overlap. Batch size: {tile_batch_size}.')
 
         accumulator = np.zeros((image_height, image_width, 3), dtype=np.float32)
         weights = np.zeros((image_height, image_width, 1), dtype=np.float32)
@@ -332,37 +348,49 @@ def worker():
             refiner_swap_method=async_task.refiner_swap_method
         )
 
-        for y in y_positions:
-            for x in x_positions:
-                if async_task.last_stop is not False:
-                    ldm_patched.modules.model_management.interrupt_current_processing()
+        while tile_index < total_tiles:
+            if async_task.last_stop is not False:
+                ldm_patched.modules.model_management.interrupt_current_processing()
 
-                tile_index += 1
+            current_batch = tile_positions[tile_index:tile_index + tile_batch_size]
+            batch_end = tile_index + len(current_batch)
+            progressbar(async_task, int(base_progress + progress_scale * completed_steps),
+                        f'Tiled detail tiles {tile_index + 1}-{batch_end}/{total_tiles} ...')
+
+            tiles = []
+            tile_dimensions = []
+            for y, x in current_batch:
                 tile, tile_height, tile_width = get_padded_detail_tile(image, y, x, DEFAULT_TILE_SIZE)
-                progressbar(async_task, int(base_progress + progress_scale * completed_steps),
-                            f'Tiled detail tile {tile_index}/{total_tiles} ...')
+                tiles.append(tile)
+                tile_dimensions.append((tile_height, tile_width))
 
-                initial_pixels = core.numpy_to_pytorch(tile)
+            initial_pixels = torch.from_numpy(np.stack(tiles)).float().div_(255.0)
+            tile_seeds = [
+                (task['task_seed'] + index + 1) % (constants.MAX_SEED + 1)
+                for index in range(tile_index, batch_end)
+            ]
+
+            def tile_callback(step, x0, latent_x, total_steps, preview):
+                batch_progress = completed_steps + (step + 1) * len(current_batch)
+                preview_progress = int(base_progress + progress_scale * batch_progress)
+                async_task.yields.append(['preview', (
+                    preview_progress,
+                    f'Tiled detail tiles {tile_index + 1}-{batch_end}/{total_tiles}, '
+                    f'step {step + 1}/{total_steps}, image {current_task_id + 1}/{total_count} ...',
+                    preview
+                )])
+
+            tile_latent = None
+            try:
                 tile_latent = core.encode_vae(vae=candidate_vae, pixels=initial_pixels)
-                tile_seed = (task['task_seed'] + tile_index) % (constants.MAX_SEED + 1)
-
-                def tile_callback(step, x0, latent_x, total_steps, preview):
-                    preview_progress = int(base_progress + progress_scale * (completed_steps + step + 1))
-                    async_task.yields.append(['preview', (
-                        preview_progress,
-                        f'Tiled detail tile {tile_index}/{total_tiles}, step {step + 1}/{total_steps}, '
-                        f'image {current_task_id + 1}/{total_count} ...',
-                        preview
-                    )])
-
-                tile_result = pipeline.process_diffusion(
+                tile_results = pipeline.process_diffusion(
                     positive_cond=positive_cond,
                     negative_cond=negative_cond,
                     steps=steps,
                     switch=switch,
                     width=DEFAULT_TILE_SIZE,
                     height=DEFAULT_TILE_SIZE,
-                    image_seed=tile_seed,
+                    image_seed=tile_seeds if len(tile_seeds) > 1 else tile_seeds[0],
                     callback=tile_callback,
                     sampler_name=async_task.sampler_name,
                     scheduler_name=final_scheduler_name,
@@ -371,9 +399,31 @@ def worker():
                     tiled=False,
                     cfg_scale=async_task.cfg_scale,
                     refiner_swap_method=async_task.refiner_swap_method,
-                    disable_preview=async_task.disable_preview
-                )[0]
+                    disable_preview=async_task.disable_preview,
+                    deep_cache_profile=async_task.deep_cache_profile
+                )
+            except torch.cuda.OutOfMemoryError:
+                if tile_batch_size == 1:
+                    if ldm_patched.modules.model_management.downgrade_vram_policy(
+                            'tiled detail upscale memory pressure'):
+                        ldm_patched.modules.model_management.unload_all_models()
+                        ldm_patched.modules.model_management.soft_empty_cache(force=True)
+                        print('[Tiled Detail Upscale] Retrying after VRAM policy downgrade.')
+                        continue
+                    raise
+                tile_batch_size = max(1, tile_batch_size // 2)
+                print(f'[Tiled Detail Upscale] VRAM limit reached. Retrying with batch size {tile_batch_size}.')
+                del initial_pixels, tiles
+                if tile_latent is not None:
+                    del tile_latent
+                torch.cuda.empty_cache()
+                continue
 
+            if len(tile_results) != len(current_batch):
+                raise RuntimeError('Tiled detail upscale returned an unexpected image batch size.')
+
+            for (y, x), (tile_height, tile_width), tile_result in zip(
+                    current_batch, tile_dimensions, tile_results):
                 tile_result = tile_result[:tile_height, :tile_width].astype(np.float32)
                 blend_mask = make_blend_mask(
                     tile_height=tile_height,
@@ -388,8 +438,9 @@ def worker():
                 accumulator[y:y + tile_height, x:x + tile_width] += tile_result * blend_mask
                 weights[y:y + tile_height, x:x + tile_width] += blend_mask
 
-                completed_steps += steps
-                del initial_pixels, tile, tile_latent, tile_result
+            completed_steps += steps * len(current_batch)
+            tile_index = batch_end
+            del initial_pixels, tiles, tile_latent, tile_results
 
         result = accumulator / np.maximum(weights, 1e-6)
         result = np.clip(result, 0, 255).astype(np.uint8)
@@ -434,7 +485,8 @@ def worker():
                 tiled=tiled,
                 cfg_scale=async_task.cfg_scale,
                 refiner_swap_method=async_task.refiner_swap_method,
-                disable_preview=async_task.disable_preview
+                disable_preview=async_task.disable_preview,
+                deep_cache_profile=async_task.deep_cache_profile
             )
 
         del positive_cond, negative_cond  # Save memory
@@ -453,13 +505,25 @@ def worker():
         return imgs, img_paths, current_progress
 
     def apply_patch_settings(async_task):
+        async_task.guidance_mode = normalize_guidance_mode(async_task.guidance_mode)
+        if async_task.deep_cache_profile not in flags.deep_cache_profiles:
+            async_task.deep_cache_profile = 'off'
+        if async_task.cfg_scale <= 1.0 and async_task.guidance_mode != GUIDANCE_STANDARD:
+            print('[Guidance] Guidance variant disabled because CFG is 1.0.')
+            async_task.guidance_mode = GUIDANCE_STANDARD
+        elif (async_task.guidance_mode == GUIDANCE_CFGPP
+              and not supports_cfgpp_sampler(async_task.sampler_name)):
+            print(f'[Guidance] CFG++ does not support {async_task.sampler_name}; using Standard guidance.')
+            async_task.guidance_mode = GUIDANCE_STANDARD
+
         patch_settings[pid] = PatchSettings(
             async_task.sharpness,
             async_task.adm_scaler_end,
             async_task.adm_scaler_positive,
             async_task.adm_scaler_negative,
             async_task.controlnet_softness,
-            async_task.adaptive_cfg
+            async_task.adaptive_cfg,
+            async_task.guidance_mode
         )
 
     def save_and_log(async_task, height, imgs, task, use_expansion, width, loras, persist_image=True) -> list:
@@ -491,6 +555,10 @@ def worker():
             if modules.patch.patch_settings[pid].adaptive_cfg != modules.config.default_cfg_tsnr:
                 d.append(
                     ('CFG Mimicking from TSNR', 'adaptive_cfg', modules.patch.patch_settings[pid].adaptive_cfg))
+            if async_task.guidance_mode != modules.config.default_guidance_mode:
+                d.append(('Guidance', 'guidance_mode', async_task.guidance_mode))
+            if async_task.deep_cache_profile != modules.config.default_deep_cache_profile:
+                d.append(('DeepCache', 'deep_cache_profile', async_task.deep_cache_profile))
 
             if async_task.clip_skip > 1:
                 d.append(('CLIP Skip', 'clip_skip', async_task.clip_skip))
@@ -517,7 +585,9 @@ def worker():
             d.append(('Metadata Scheme', 'metadata_scheme',
                       async_task.metadata_scheme.value if async_task.save_metadata_to_images else async_task.save_metadata_to_images))
             d.append(('Version', 'version', 'Fooocus v' + fooocus_version.version))
-            img_paths.append(log(x, d, metadata_parser, async_task.output_format, task, persist_image))
+            image_path = log(x, d, metadata_parser, async_task.output_format, task, persist_image)
+            img_paths.append(image_path)
+            performance_metrics.record_image(image_path, x)
 
         return img_paths
 
@@ -1099,6 +1169,7 @@ def worker():
     def stop_processing(async_task, processing_start_time):
         async_task.processing = False
         processing_time = time.perf_counter() - processing_start_time
+        performance_metrics.record_stage('processing', processing_time)
         print(f'Processing time (total): {processing_time:.2f} seconds')
 
     def process_enhance(all_steps, async_task, callback, controlnet_canny_path, controlnet_cpds_path,
@@ -1245,7 +1316,11 @@ def worker():
             async_task.prompt = translate2en(async_task.prompt, 'prompt')
             async_task.negative_prompt = translate2en(async_task.negative_prompt, 'negative prompt')
 
+        apply_patch_settings(async_task)
+
         print(f'[Parameters] Adaptive CFG = {async_task.adaptive_cfg}')
+        print(f'[Parameters] Guidance = {async_task.guidance_mode}')
+        print(f'[Parameters] DeepCache = {async_task.deep_cache_profile}')
         print(f'[Parameters] CLIP Skip = {async_task.clip_skip}')
         print(f'[Parameters] Sharpness = {async_task.sharpness}')
         print(f'[Parameters] ControlNet Softness = {async_task.controlnet_softness}')
@@ -1254,8 +1329,6 @@ def worker():
               f'{async_task.adm_scaler_negative} : '
               f'{async_task.adm_scaler_end}')
         print(f'[Parameters] Seed = {async_task.seed}')
-
-        apply_patch_settings(async_task)
 
         print(f'[Parameters] CFG = {async_task.cfg_scale}')
 
@@ -1297,6 +1370,13 @@ def worker():
         ip_adapter.load_ip_adapter(clip_vision_path, ip_negative_path, ip_adapter_face_path)
 
         async_task.steps, switch, width, height = apply_overrides(async_task, async_task.steps, height, width)
+        performance_metrics.update_workload(
+            resolution=f'{width}x{height}',
+            steps=async_task.steps,
+            refiner=async_task.refiner_model_name,
+            sampler=async_task.sampler_name,
+            scheduler=async_task.scheduler_name,
+        )
 
         print(f'[Parameters] Sampler = {async_task.sampler_name} - {async_task.scheduler_name}')
         print(f'[Parameters] Steps = {async_task.steps} - {switch}')
@@ -1309,6 +1389,9 @@ def worker():
                                                          base_model_additional_loras, async_task.image_number,
                                                          async_task.disable_seed_increment, use_expansion, use_style,
                                                          use_synthetic_refiner, current_progress, advance_progress=True)
+            performance_metrics.update_workload(
+                loras=[[str(name), float(weight)] for name, weight in loras],
+            )
 
         if len(goals) > 0:
             current_progress += 1
@@ -1407,9 +1490,14 @@ def worker():
         print(f'[Parameters] Initial Latent shape: {log_shape}')
 
         preparation_time = time.perf_counter() - preparation_start_time
+        performance_metrics.record_stage('preparation', preparation_time)
         print(f'Preparation time: {preparation_time:.2f} seconds')
 
         final_scheduler_name = patch_samplers(async_task)
+        performance_metrics.update_workload(
+            sampler=async_task.sampler_name,
+            scheduler=final_scheduler_name,
+        )
         print(f'Using {final_scheduler_name} scheduler.')
 
         async_task.yields.append(['preview', (current_progress, 'Moving model to GPU ...', None)])
@@ -1460,6 +1548,7 @@ def worker():
 
             del task['c'], task['uc']  # Save memory
             execution_time = time.perf_counter() - execution_start_time
+            performance_metrics.record_stage('generation_and_save', execution_time)
             print(f'Generating and saving time: {execution_time:.2f} seconds')
 
         if not async_task.should_enhance:
@@ -1518,7 +1607,7 @@ def worker():
                 persist_image = not async_task.save_final_enhanced_image_only or is_last_enhance_for_image
 
                 extras = {}
-                if enhance_mask_model == 'sam':
+                if enhance_mask_model in ['sam', 'sam3']:
                     print(f'[Enhance] Searching for "{enhance_mask_dino_prompt_text}"')
                 elif enhance_mask_model == 'u2net_cloth_seg':
                     extras['cloth_category'] = enhance_mask_cloth_category
@@ -1552,7 +1641,7 @@ def worker():
                 print(f'[Enhance] {sam_detection_count} segments detected in boxes')
                 print(f'[Enhance] {sam_detection_on_mask_count} segments applied to mask')
 
-                if enhance_mask_model == 'sam' and (dino_detection_count == 0 or not async_task.debugging_dino and sam_detection_on_mask_count == 0):
+                if enhance_mask_model in ['sam', 'sam3'] and (dino_detection_count == 0 or not async_task.debugging_dino and sam_detection_on_mask_count == 0):
                     print(f'[Enhance] No "{enhance_mask_dino_prompt_text}" detected, skipping')
                     continue
 
@@ -1588,6 +1677,7 @@ def worker():
                     done_steps_inpainting += enhance_steps
 
                 enhancement_task_time = time.perf_counter() - enhancement_task_start_time
+                performance_metrics.record_stage('enhancement', enhancement_task_time)
                 print(f'Enhancement time: {enhancement_task_time:.2f} seconds')
 
             if exception_result == 'break':
@@ -1611,6 +1701,7 @@ def worker():
                     break
 
             enhancement_image_time = time.perf_counter() - enhancement_image_start_time
+            performance_metrics.record_stage('enhancement_images', enhancement_image_time)
             print(f'Enhancement image time: {enhancement_image_time:.2f} seconds')
 
         stop_processing(async_task, processing_start_time)
@@ -1620,6 +1711,8 @@ def worker():
         time.sleep(0.01)
         if len(async_tasks) > 0:
             task = async_tasks.pop(0)
+            status = 'complete'
+            performance_metrics.begin_generation(task)
 
             try:
                 handler(task)
@@ -1628,9 +1721,11 @@ def worker():
                 task.yields.append(['finish', task.results])
                 pipeline.prepare_text_encoder(async_call=True)
             except:
+                status = 'error'
                 traceback.print_exc()
                 task.yields.append(['finish', task.results])
             finally:
+                performance_metrics.finish_generation(status)
                 if pid in modules.patch.patch_settings:
                     del modules.patch.patch_settings[pid]
     pass

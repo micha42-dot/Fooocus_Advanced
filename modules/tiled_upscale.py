@@ -6,6 +6,7 @@ import numpy as np
 TILED_DETAIL_LATENT_KEY = 'tiled_detail_image'
 DEFAULT_TILE_SIZE = 1024
 DEFAULT_TILE_OVERLAP = 192
+MAX_TILE_BATCH_SIZE = 4
 
 
 def is_tiled_detail_upscale(uov_method: str) -> bool:
@@ -52,6 +53,25 @@ def estimate_tiled_detail_tile_count(height: int, width: int, scale: float,
     height = max(1, int(math.ceil(height * scale)))
     width = max(1, int(math.ceil(width * scale)))
     return get_tiled_detail_tile_count(height, width, tile_size, overlap)
+
+
+def get_tiled_detail_batch_size(total_vram_mb: float, requested: int = 0,
+                                total_tiles: int | None = None) -> int:
+    if requested < 0:
+        raise ValueError('requested batch size must be zero or greater')
+
+    if requested > 0:
+        batch_size = min(requested, MAX_TILE_BATCH_SIZE)
+    elif total_vram_mb >= 24576:
+        batch_size = 4
+    elif total_vram_mb >= 16384:
+        batch_size = 2
+    else:
+        batch_size = 1
+
+    if total_tiles is not None:
+        batch_size = min(batch_size, max(1, total_tiles))
+    return batch_size
 
 
 def make_blend_mask(tile_height: int, tile_width: int, y: int, x: int,

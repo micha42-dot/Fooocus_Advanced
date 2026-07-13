@@ -265,6 +265,12 @@ temp_path_cleanup_on_launch = get_config_item_or_set_default(
     validator=lambda x: isinstance(x, bool),
     expected_type=bool
 )
+disable_model_download = get_config_item_or_set_default(
+    key='disable_model_download',
+    default_value=False,
+    validator=lambda x: isinstance(x, bool),
+    expected_type=bool
+)
 default_base_model_name = default_model = get_config_item_or_set_default(
     key='default_model',
     default_value='model.safetensors',
@@ -348,6 +354,18 @@ default_cfg_scale = get_config_item_or_set_default(
     default_value=7.0,
     validator=lambda x: isinstance(x, numbers.Number),
     expected_type=numbers.Number
+)
+default_guidance_mode = get_config_item_or_set_default(
+    key='default_guidance_mode',
+    default_value='Standard',
+    validator=lambda x: x in modules.flags.guidance_modes,
+    expected_type=str
+)
+default_deep_cache_profile = get_config_item_or_set_default(
+    key='default_deep_cache_profile',
+    default_value=getattr(args_manager.args, 'unet_cache', 'off'),
+    validator=lambda x: x in modules.flags.deep_cache_profiles,
+    expected_type=str
 )
 default_sample_sharpness = get_config_item_or_set_default(
     key='default_sample_sharpness',
@@ -731,6 +749,8 @@ possible_preset_keys = {
     "default_loras_max_weight": "default_loras_max_weight",
     "default_loras": "<processed>",
     "default_cfg_scale": "guidance_scale",
+    "default_guidance_mode": "guidance_mode",
+    "default_deep_cache_profile": "deep_cache_profile",
     "default_sample_sharpness": "sharpness",
     "default_cfg_tsnr": "adaptive_cfg",
     "default_clip_skip": "clip_skip",

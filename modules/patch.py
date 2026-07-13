@@ -20,6 +20,14 @@ import ldm_patched.modules.args_parser
 import warnings
 import safetensors.torch
 import modules.constants as constants
+from modules.guidance import (
+    GUIDANCE_APG,
+    GUIDANCE_CFGPP,
+    GUIDANCE_STANDARD,
+    adaptive_projected_guidance,
+    cfgpp_scale,
+    normalize_guidance_mode,
+)
 
 from ldm_patched.modules.samplers import calc_cond_uncond_batch
 from ldm_patched.k_diffusion.sampling import BatchedBrownianTree
@@ -35,15 +43,19 @@ class PatchSettings:
                  positive_adm_scale=1.5,
                  negative_adm_scale=0.8,
                  controlnet_softness=0.25,
-                 adaptive_cfg=7.0):
+                 adaptive_cfg=7.0,
+                 guidance_mode=GUIDANCE_STANDARD):
         self.sharpness = sharpness
         self.adm_scaler_end = adm_scaler_end
         self.positive_adm_scale = positive_adm_scale
         self.negative_adm_scale = negative_adm_scale
         self.controlnet_softness = controlnet_softness
         self.adaptive_cfg = adaptive_cfg
+        self.guidance_mode = normalize_guidance_mode(guidance_mode)
         self.global_diffusion_progress = 0
         self.eps_record = None
+        self.apg_running_average = None
+        self.cfgpp_uncond_denoised = None
 
 
 patch_settings = {}
@@ -209,14 +221,44 @@ class BrownianTreeNoiseSamplerPatched:
         return tree(t0, t1) / (t1 - t0).abs().sqrt()
 
 
+def reset_guidance_state():
+    settings = patch_settings.get(os.getpid())
+    if settings is not None:
+        settings.apg_running_average = None
+        settings.cfgpp_uncond_denoised = None
+
+
+def get_cfgpp_uncond_denoised():
+    settings = patch_settings.get(os.getpid())
+    if settings is None or settings.guidance_mode != GUIDANCE_CFGPP:
+        return None
+    return settings.cfgpp_uncond_denoised
+
+
 def compute_cfg(uncond, cond, cfg_scale, t):
     pid = os.getpid()
-    mimic_cfg = float(patch_settings[pid].adaptive_cfg)
+    settings = patch_settings[pid]
+    guidance_mode = settings.guidance_mode
+
+    if guidance_mode == GUIDANCE_APG:
+        result, running_average = adaptive_projected_guidance(
+            uncond=uncond,
+            cond=cond,
+            cfg_scale=cfg_scale,
+            running_average=settings.apg_running_average,
+        )
+        settings.apg_running_average = running_average
+        return result
+
+    if guidance_mode == GUIDANCE_CFGPP:
+        return uncond + cfgpp_scale(cfg_scale) * (cond - uncond)
+
+    mimic_cfg = float(settings.adaptive_cfg)
     real_cfg = float(cfg_scale)
 
     real_eps = uncond + real_cfg * (cond - uncond)
 
-    if cfg_scale > patch_settings[pid].adaptive_cfg:
+    if cfg_scale > settings.adaptive_cfg:
         mimicked_eps = uncond + mimic_cfg * (cond - uncond)
         return real_eps * t + mimicked_eps * (1 - t)
     else:
@@ -235,6 +277,9 @@ def patched_sampling_function(model, x, timestep, uncond, cond, cond_scale, mode
         return final_x0
 
     positive_x0, negative_x0 = calc_cond_uncond_batch(model, cond, uncond, x, timestep, model_options)
+
+    settings = patch_settings[pid]
+    settings.cfgpp_uncond_denoised = negative_x0 if settings.guidance_mode == GUIDANCE_CFGPP else None
 
     positive_eps = x - positive_x0
     negative_eps = x - negative_x0
@@ -390,6 +435,21 @@ def patched_unet_forward(self, x, timesteps=None, context=None, y=None, control=
     assert (y is not None) == (
             self.num_classes is not None
     ), "must specify y if and only if the model is class-conditional"
+
+    deep_cache = getattr(self, '_fooocus_deep_cache', None)
+    cache_plan = None
+    if deep_cache is not None:
+        cache_plan = deep_cache.begin(
+            x=x,
+            timesteps=timesteps,
+            context=context,
+            y=y,
+            control=control,
+            transformer_options=transformer_options,
+            input_blocks=len(self.input_blocks),
+            output_blocks=len(self.output_blocks),
+        )
+
     hs = []
     t_emb = ldm_patched.ldm.modules.diffusionmodules.openaimodel.timestep_embedding(timesteps, self.model_channels, repeat_only=False).to(x.dtype)
     emb = self.time_embed(t_emb)
@@ -399,7 +459,9 @@ def patched_unet_forward(self, x, timesteps=None, context=None, y=None, control=
         emb = emb + self.label_emb(y)
 
     h = x
-    for id, module in enumerate(self.input_blocks):
+    input_block_count = cache_plan.input_count if cache_plan is not None else len(self.input_blocks)
+    for id in range(input_block_count):
+        module = self.input_blocks[id]
         transformer_options["block"] = ("input", id)
         h = forward_timestep_embed(module, h, emb, context, transformer_options, time_context=time_context, num_video_frames=num_video_frames, image_only_indicator=image_only_indicator)
         h = apply_control(h, control, 'input')
@@ -414,11 +476,18 @@ def patched_unet_forward(self, x, timesteps=None, context=None, y=None, control=
             for p in patch:
                 h = p(h, transformer_options)
 
-    transformer_options["block"] = ("middle", 0)
-    h = forward_timestep_embed(self.middle_block, h, emb, context, transformer_options, time_context=time_context, num_video_frames=num_video_frames, image_only_indicator=image_only_indicator)
-    h = apply_control(h, control, 'middle')
+    if cache_plan is not None and cache_plan.reuse:
+        h = cache_plan.feature
+        transformer_options["transformer_index"] = cache_plan.transformer_index
+        output_block_start = cache_plan.output_start
+    else:
+        transformer_options["block"] = ("middle", 0)
+        h = forward_timestep_embed(self.middle_block, h, emb, context, transformer_options, time_context=time_context, num_video_frames=num_video_frames, image_only_indicator=image_only_indicator)
+        h = apply_control(h, control, 'middle')
+        output_block_start = 0
 
-    for id, module in enumerate(self.output_blocks):
+    for id in range(output_block_start, len(self.output_blocks)):
+        module = self.output_blocks[id]
         transformer_options["block"] = ("output", id)
         hsp = hs.pop()
         hsp = apply_control(hsp, control, 'output')
@@ -435,6 +504,9 @@ def patched_unet_forward(self, x, timesteps=None, context=None, y=None, control=
         else:
             output_shape = None
         h = forward_timestep_embed(module, h, emb, context, transformer_options, output_shape, time_context=time_context, num_video_frames=num_video_frames, image_only_indicator=image_only_indicator)
+        if (cache_plan is not None and not cache_plan.reuse
+                and id == cache_plan.cache_after):
+            deep_cache.store(cache_plan, timesteps, h, transformer_options.get("transformer_index", 0))
     h = h.type(x.dtype)
     if self.predict_codebook_ids:
         return self.id_predictor(h)
@@ -503,6 +575,7 @@ def patch_all():
     ldm_patched.modules.model_base.SDXL.encode_adm = sdxl_encode_adm_patched
     ldm_patched.modules.samplers.KSamplerX0Inpaint.forward = patched_KSamplerX0Inpaint_forward
     ldm_patched.k_diffusion.sampling.BrownianTreeNoiseSampler = BrownianTreeNoiseSamplerPatched
+    ldm_patched.k_diffusion.sampling.cfgpp_get_uncond_denoised = get_cfgpp_uncond_denoised
     ldm_patched.modules.samplers.sampling_function = patched_sampling_function
 
     warnings.filterwarnings(action='ignore', module='torchsde')

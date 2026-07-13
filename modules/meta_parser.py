@@ -36,6 +36,8 @@ def load_parameter_button_click(raw_metadata: dict | str, is_generating: bool, i
     get_resolution('resolution', 'Resolution', loaded_parameter_dict, results)
     get_number('guidance_scale', 'Guidance Scale', loaded_parameter_dict, results)
     get_number('sharpness', 'Sharpness', loaded_parameter_dict, results)
+    get_str('guidance_mode', 'Guidance', loaded_parameter_dict, results)
+    get_str('deep_cache_profile', 'DeepCache', loaded_parameter_dict, results)
     get_adm_guidance('adm_guidance', 'ADM Guidance', loaded_parameter_dict, results)
     get_str('refiner_swap_method', 'Refiner Swap Method', loaded_parameter_dict, results)
     get_number('adaptive_cfg', 'CFG Mimicking from TSNR', loaded_parameter_dict, results)
@@ -345,6 +347,8 @@ class A1111MetadataParser(MetadataParser):
         'seed': 'Seed',
         'resolution': 'Size',
         'sharpness': 'Sharpness',
+        'guidance_mode': 'Guidance',
+        'deep_cache_profile': 'DeepCache',
         'adm_guidance': 'ADM Guidance',
         'refiner_swap_method': 'Refiner Swap Method',
         'adaptive_cfg': 'Adaptive CFG',
@@ -493,7 +497,7 @@ class A1111MetadataParser(MetadataParser):
                 self.fooocus_to_a1111['refiner_model_hash']: self.refiner_model_hash
             }
 
-        for key in ['adaptive_cfg', 'clip_skip', 'overwrite_switch', 'refiner_swap_method', 'freeu']:
+        for key in ['guidance_mode', 'deep_cache_profile', 'adaptive_cfg', 'clip_skip', 'overwrite_switch', 'refiner_swap_method', 'freeu']:
             if key in data:
                 generation_params[self.fooocus_to_a1111[key]] = data[key]
 

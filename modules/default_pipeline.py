@@ -9,6 +9,7 @@ import ldm_patched.modules.latent_formats
 import modules.inpaint_worker
 import extras.vae_interpose as vae_interpose
 from extras.expansion import FooocusExpansion
+from modules.clip_cache import get_clip_cache
 
 from ldm_patched.modules.model_base import SDXL, SDXLRefiner
 from modules.sample_hijack import clip_separate
@@ -145,16 +146,17 @@ def refresh_loras(loras, base_model_additional_loras=None):
 @torch.no_grad()
 @torch.inference_mode()
 def clip_encode_single(clip, text, verbose=False):
-    cached = clip.fcs_cond_cache.get(text, None)
-    if cached is not None:
-        if verbose:
-            print(f'[CLIP Cached] {text}')
-        return cached
-    tokens = clip.tokenize(text)
-    result = clip.encode_from_tokens(tokens, return_pooled=True)
-    clip.fcs_cond_cache[text] = result
+    cache = get_clip_cache()
+
+    def encode():
+        tokens = clip.tokenize(text)
+        return clip.encode_from_tokens(tokens, return_pooled=True)
+
+    previous_hits = cache.stats()['hits'] if verbose else 0
+    result = cache.get_or_encode(clip, text, encode)
     if verbose:
-        print(f'[CLIP Encoded] {text}')
+        action = 'Cached' if cache.stats()['hits'] > previous_hits else 'Encoded'
+        print(f'[CLIP {action}] {text}')
     return result
 
 
@@ -215,7 +217,7 @@ def set_clip_skip(clip_skip: int):
 @torch.no_grad()
 @torch.inference_mode()
 def clear_all_caches():
-    final_clip.fcs_cond_cache = {}
+    get_clip_cache().clear()
 
 
 @torch.no_grad()
@@ -263,7 +265,6 @@ def refresh_everything(refiner_model_name, base_model_name, loras,
         final_expansion = FooocusExpansion()
 
     prepare_text_encoder(async_call=True)
-    clear_all_caches()
     return
 
 
@@ -333,7 +334,7 @@ def get_candidate_vae(steps, switch, denoise=1.0, refiner_swap_method='joint'):
 
 @torch.no_grad()
 @torch.inference_mode()
-def process_diffusion(positive_cond, negative_cond, steps, switch, width, height, image_seed, callback, sampler_name, scheduler_name, latent=None, denoise=1.0, tiled=False, cfg_scale=7.0, refiner_swap_method='joint', disable_preview=False):
+def process_diffusion(positive_cond, negative_cond, steps, switch, width, height, image_seed, callback, sampler_name, scheduler_name, latent=None, denoise=1.0, tiled=False, cfg_scale=7.0, refiner_swap_method='joint', disable_preview=False, deep_cache_profile='off'):
     target_unet, target_vae, target_refiner_unet, target_refiner_vae, target_clip \
         = final_unet, final_vae, final_refiner_unet, final_refiner_vae, final_clip
 
@@ -392,7 +393,8 @@ def process_diffusion(positive_cond, negative_cond, steps, switch, width, height
             refiner_switch=switch,
             previewer_start=0,
             previewer_end=steps,
-            disable_preview=disable_preview
+            disable_preview=disable_preview,
+            deep_cache_profile=deep_cache_profile
         )
         decoded_latent = core.decode_vae(vae=target_vae, latent_image=sampled_latent, tiled=tiled)
 
@@ -411,7 +413,8 @@ def process_diffusion(positive_cond, negative_cond, steps, switch, width, height
             scheduler=scheduler_name,
             previewer_start=0,
             previewer_end=steps,
-            disable_preview=disable_preview
+            disable_preview=disable_preview,
+            deep_cache_profile=deep_cache_profile
         )
         print('Refiner swapped by changing ksampler. Noise preserved.')
 
@@ -434,7 +437,8 @@ def process_diffusion(positive_cond, negative_cond, steps, switch, width, height
             scheduler=scheduler_name,
             previewer_start=switch,
             previewer_end=steps,
-            disable_preview=disable_preview
+            disable_preview=disable_preview,
+            deep_cache_profile=deep_cache_profile
         )
 
         target_model = target_refiner_vae
@@ -462,7 +466,8 @@ def process_diffusion(positive_cond, negative_cond, steps, switch, width, height
             scheduler=scheduler_name,
             previewer_start=0,
             previewer_end=steps,
-            disable_preview=disable_preview
+            disable_preview=disable_preview,
+            deep_cache_profile=deep_cache_profile
         )
         print('Fooocus VAE-based swap.')
 
@@ -502,7 +507,8 @@ def process_diffusion(positive_cond, negative_cond, steps, switch, width, height
             previewer_end=steps,
             sigmas=sigmas,
             noise_mean=noise_mean,
-            disable_preview=disable_preview
+            disable_preview=disable_preview,
+            deep_cache_profile=deep_cache_profile
         )
 
         target_model = target_refiner_vae
