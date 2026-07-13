@@ -58,6 +58,20 @@ def generate_mask_from_image(image: np.ndarray, mask_model: str = 'sam', extras=
     if 'image' in image:
         image = image['image']
 
+    if mask_model == 'sam3' and sam_options is not None:
+        try:
+            from extras.sam3_client import generate_sam3_mask
+            return generate_sam3_mask(
+                image=image,
+                prompt=sam_options.dino_prompt,
+                confidence_threshold=sam_options.dino_box_threshold,
+                max_detections=sam_options.max_detections,
+            )
+        except Exception as error:
+            print(f'[SAM 3] {error}')
+            print('[SAM 3] Falling back to GroundingDINO + SAM.')
+            mask_model = 'sam'
+
     if mask_model != 'sam' or sam_options is None:
         result = remove(
             image,
