@@ -9,6 +9,16 @@ from tqdm.auto import trange, tqdm
 from . import utils
 
 
+cfgpp_get_uncond_denoised = lambda: None
+
+
+def get_cfgpp_uncond_denoised(denoised):
+    uncond_denoised = cfgpp_get_uncond_denoised()
+    if isinstance(uncond_denoised, torch.Tensor) and uncond_denoised.shape == denoised.shape:
+        return uncond_denoised
+    return None
+
+
 def append_zero(x):
     return torch.cat([x, x.new_zeros([1])])
 
@@ -135,12 +145,16 @@ def sample_euler(model, x, sigmas, extra_args=None, callback=None, disable=None,
             eps = torch.randn_like(x) * s_noise
             x = x + eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
         denoised = model(x, sigma_hat * s_in, **extra_args)
-        d = to_d(x, sigma_hat, denoised)
+        cfgpp_uncond = get_cfgpp_uncond_denoised(denoised)
+        d = to_d(x, sigma_hat, cfgpp_uncond if cfgpp_uncond is not None else denoised)
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigma_hat, 'denoised': denoised})
         dt = sigmas[i + 1] - sigma_hat
         # Euler method
-        x = x + d * dt
+        if cfgpp_uncond is not None:
+            x = denoised + d * sigmas[i + 1]
+        else:
+            x = x + d * dt
     return x
 
 
@@ -155,10 +169,14 @@ def sample_euler_ancestral(model, x, sigmas, extra_args=None, callback=None, dis
         sigma_down, sigma_up = get_ancestral_step(sigmas[i], sigmas[i + 1], eta=eta)
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
-        d = to_d(x, sigmas[i], denoised)
+        cfgpp_uncond = get_cfgpp_uncond_denoised(denoised)
+        d = to_d(x, sigmas[i], cfgpp_uncond if cfgpp_uncond is not None else denoised)
         # Euler method
         dt = sigma_down - sigmas[i]
-        x = x + d * dt
+        if cfgpp_uncond is not None:
+            x = denoised + d * sigma_down
+        else:
+            x = x + d * dt
         if sigmas[i + 1] > 0:
             x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
     return x
@@ -578,18 +596,30 @@ def sample_dpmpp_2m(model, x, sigmas, extra_args=None, callback=None, disable=No
 
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
+        cfgpp_uncond = get_cfgpp_uncond_denoised(denoised)
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
         t, t_next = t_fn(sigmas[i]), t_fn(sigmas[i + 1])
         h = t_next - t
-        if old_denoised is None or sigmas[i + 1] == 0:
-            x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * denoised
+        if cfgpp_uncond is not None:
+            if old_denoised is None or sigmas[i + 1] == 0:
+                x = denoised + to_d(x, sigmas[i], cfgpp_uncond) * sigmas[i + 1]
+            else:
+                h_last = t - t_fn(sigmas[i - 1])
+                r = h_last / h
+                extra = -torch.exp(-h) * cfgpp_uncond
+                extra = extra - (-h).expm1() * (cfgpp_uncond - old_denoised) / (2 * r)
+                x = denoised + torch.exp(-h) * x + extra
+            old_denoised = cfgpp_uncond
         else:
-            h_last = t - t_fn(sigmas[i - 1])
-            r = h_last / h
-            denoised_d = (1 + 1 / (2 * r)) * denoised - (1 / (2 * r)) * old_denoised
-            x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * denoised_d
-        old_denoised = denoised
+            if old_denoised is None or sigmas[i + 1] == 0:
+                x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * denoised
+            else:
+                h_last = t - t_fn(sigmas[i - 1])
+                r = h_last / h
+                denoised_d = (1 + 1 / (2 * r)) * denoised - (1 / (2 * r)) * old_denoised
+                x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * denoised_d
+            old_denoised = denoised
     return x
 
 @torch.no_grad()
@@ -611,6 +641,7 @@ def sample_dpmpp_2m_sde(model, x, sigmas, extra_args=None, callback=None, disabl
 
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
+        cfgpp_uncond = get_cfgpp_uncond_denoised(denoised)
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
         if sigmas[i + 1] == 0:
@@ -622,19 +653,24 @@ def sample_dpmpp_2m_sde(model, x, sigmas, extra_args=None, callback=None, disabl
             h = s - t
             eta_h = eta * h
 
-            x = sigmas[i + 1] / sigmas[i] * (-eta_h).exp() * x + (-h - eta_h).expm1().neg() * denoised
+            carry = sigmas[i + 1] / sigmas[i] * (-eta_h).exp()
+            history_denoised = cfgpp_uncond if cfgpp_uncond is not None else denoised
+            if cfgpp_uncond is not None:
+                x = denoised + carry * (x - cfgpp_uncond)
+            else:
+                x = carry * x + (-h - eta_h).expm1().neg() * denoised
 
             if old_denoised is not None:
                 r = h_last / h
                 if solver_type == 'heun':
-                    x = x + ((-h - eta_h).expm1().neg() / (-h - eta_h) + 1) * (1 / r) * (denoised - old_denoised)
+                    x = x + ((-h - eta_h).expm1().neg() / (-h - eta_h) + 1) * (1 / r) * (history_denoised - old_denoised)
                 elif solver_type == 'midpoint':
-                    x = x + 0.5 * (-h - eta_h).expm1().neg() * (1 / r) * (denoised - old_denoised)
+                    x = x + 0.5 * (-h - eta_h).expm1().neg() * (1 / r) * (history_denoised - old_denoised)
 
             if eta:
                 x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * sigmas[i + 1] * (-2 * eta_h).expm1().neg().sqrt() * s_noise
 
-        old_denoised = denoised
+        old_denoised = cfgpp_uncond if cfgpp_uncond is not None else denoised
         h_last = h
     return x
 
