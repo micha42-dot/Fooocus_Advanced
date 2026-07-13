@@ -38,3 +38,13 @@ class TestTiledUpscale(unittest.TestCase):
         self.assertEqual(np.float32, mask.dtype)
         self.assertEqual(1.0, mask[0, 0])
         self.assertLess(mask[-1, -1], 0.01)
+
+    def test_tile_batch_size_is_conservative_and_bounded(self):
+        self.assertEqual(1, tiled_upscale.get_tiled_detail_batch_size(12288, total_tiles=8))
+        self.assertEqual(2, tiled_upscale.get_tiled_detail_batch_size(16384, total_tiles=8))
+        self.assertEqual(4, tiled_upscale.get_tiled_detail_batch_size(24576, total_tiles=8))
+        self.assertEqual(3, tiled_upscale.get_tiled_detail_batch_size(24576, requested=3, total_tiles=8))
+        self.assertEqual(2, tiled_upscale.get_tiled_detail_batch_size(24576, requested=8, total_tiles=2))
+
+        with self.assertRaises(ValueError):
+            tiled_upscale.get_tiled_detail_batch_size(24576, requested=-1)
