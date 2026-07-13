@@ -17,6 +17,33 @@ I'm cheekily calling it simply Fooocus Advanced.
 - **Performance logging and comparison tools** for generation time, peak VRAM usage, and output consistency.
 - **Improved model handling** with portable paths, nested-folder detection, reuse of existing checkpoints, and an option to disable all automatic model downloads.
 
+
+### Windows installation
+
+To install Fooocus Advanced, download two packages: **Fooocus Advanced** itself and **Python Embedded**, which contains the Python environment required to run Fooocus Advanced.
+
+Extract both packages into the same directory. The `python_embeded` folder from the Python Embedded package must be placed next to the BAT files and the `Fooocus` folder, not inside the `Fooocus` folder. The final folder structure should look like this:
+
+```text
+Fooocus Advanced/
+|-- Fooocus/
+|   |-- entry_with_update.py
+|   |-- launch.py
+|   |-- models/
+|   `-- modules/
+|-- python_embeded/
+|   `-- python.exe
+|-- run.bat
+|-- run_anime.bat
+|-- run_realistic.bat
+`-- run_no_download.bat
+```
+
+Keep the folder names exactly as shown. The spelling `python_embeded` is intentional and is expected by the Windows launchers.
+
+Start Fooocus Advanced with `run.bat`. On its first launch, Fooocus checks the bundled Python environment, installs missing dependencies, and may download the default model. Use `run_no_download.bat` to prevent all automatic model downloads; in that mode, place an SDXL checkpoint in `Fooocus/models/checkpoints` before starting.
+
+
 ---
 
 # Fooocus - mashb1t's 1-Up Edition
