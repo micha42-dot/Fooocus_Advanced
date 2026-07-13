@@ -1,17 +1,23 @@
-# Fooocus Advanced
+## Fooocus Advanced
 
-I consider Fooocus to be one of the most beautiful and elegant text-to-image tools, and I still regard SDXL as a relevant model family because it is fast and continues to be maintained by a vibrant community. I have therefore decided to continue maintaining Fooocus mashb1t's 1-Up Edition and keeping it alive, as far as I am able. Above all, so that others can build on it. 
+I consider Fooocus to be one of the most beautiful and elegant text-to-image tools, and I still regard SDXL as a relevant model family because it is fast and continues to be maintained by a vibrant community. I have therefore decided to continue maintaining Fooocus mashb1t's 1-Up Edition and keeping it alive, as far as I am able. Above all, so that others can build on it.
 
-I’m cheekily calling it simply Fooocus Advanced.
+I'm cheekily calling it simply Fooocus Advanced.
 
-## New Features
+### New features
 
-### Tiled SDXL Detail Upscale
+- **Tiled SDXL Detail Upscale** for high-resolution upscaling with additional diffusion-based detail reconstruction and automatic tile batching.
+- **Optional SAM 3 integration** for more accurate object detection, masks, and Enhance workflows.
+- **Modern APG and CFG++ guidance** for reducing oversaturation and improving sample quality. CFG++ includes sampler-correct renoising for the Euler and DPM++ 2M families.
+- **DeepCache feature reuse** for faster SDXL diffusion with configurable `conservative`, `balanced`, and `aggressive` quality/performance profiles.
+- **Smarter VRAM management** with adaptive policies for low-, medium-, and high-VRAM systems.
+- **VAE latent and CLIP condition caches** to avoid repeated encoding and reduce generation times.
+- **Automatic attention backend selection** with runtime benchmarking of PyTorch SDPA and xFormers.
+- **Optional `torch.compile` profiles** optimized for frequently used image resolutions.
+- **Performance logging and comparison tools** for generation time, peak VRAM usage, and output consistency.
+- **Improved model handling** with portable paths, nested-folder detection, reuse of existing checkpoints, and an option to disable all automatic model downloads.
 
-This fork adds a new Tiled SDXL Detail Upscale mode for high-resolution image refinement. The feature first performs the regular 2x upscale, then runs SDXL img2img over overlapping 1024px tiles with soft blending between tiles. This allows larger images to receive additional SDXL detail without processing the full resolution as one huge latent, reducing VRAM pressure while preserving a more coherent final image.
-
-The mode is available as Upscale (Tiled SDXL Detail 2x) in the Upscale or Variation menu. It is slower than the standard upscale because each tile is sampled separately, but it can produce cleaner fine detail on large outputs
-
+---
 
 # Fooocus - mashb1t's 1-Up Edition
 
@@ -61,6 +67,31 @@ Sadly the creator of Fooocus has gone dark multiple times for an extended amount
 ---
 
 ## Feature showcase
+
+### Performance toolkit
+
+This fork includes an opt-in performance toolkit for repeatable SDXL measurements and faster repeated workflows:
+
+* PyTorch SDPA and xFormers are benchmarked and numerically validated before the faster backend is selected.
+* CLIP conditions are kept in a bounded LRU cache across repeated jobs. Use `--clip-cache-size MB` to change its size or `--disable-clip-cache` to disable it.
+* `--torch-compile` supports `--torch-compile-profile resolution` for optimized graphs per latent resolution, or `dynamic` for one flexible graph. The persistent TorchInductor cache is stored below `cache/torchinductor`.
+* The Advanced tab offers [APG](https://arxiv.org/abs/2410.02416) to reduce oversaturation at stronger guidance and sampler-correct [CFG++](https://cfgpp-diffusion.github.io/) for the Euler and DPM++ 2M families. CFG++ maps Fooocus' familiar guidance range to its native low-scale range automatically.
+* DeepCache profiles reuse internal high-level SDXL features while the image-facing UNet blocks continue to run. `conservative`, `balanced`, and `aggressive` trade increasing speed for increasing approximation; `--unet-cache PROFILE` sets the startup default. Short runs, ControlNet, patched transformer runs, and `torch.compile` bypass DeepCache automatically.
+* `--performance-log [FILE] --performance-run-label LABEL` writes timings, peak VRAM, the complete workload signature and image hashes as JSONL.
+
+Fresh launcher and Docker environments use PyTorch 2.10, CUDA 12.8 wheels and xFormers 0.0.35. Existing environments are not upgraded automatically; update them explicitly with:
+
+```shell
+python -m pip install -r requirements_performance.txt
+```
+
+For a controlled comparison, generate the same prompt, seed and settings with labels such as `baseline` and `optimized`, then run:
+
+```shell
+python tools/performance_report.py outputs/performance.jsonl --baseline baseline --candidate optimized
+```
+
+The report shows median runtime, peak VRAM, speedup and, while the generated files still exist, pixel MAE and PSNR between matching outputs.
 
 ### Enhance - Automatic Image Upscaling + Enhancement
 
@@ -262,6 +293,10 @@ The first time you launch the software, it will automatically download models:
 
 1. It will download [default models](#models) to the folder "Fooocus\models\checkpoints" given different presets. You can download them in advance if you do not want automatic download.
 2. Note that if you use inpaint, at the first time you inpaint an image, it will download [Fooocus's own inpaint control model from here](https://huggingface.co/lllyasviel/fooocus_inpaint/resolve/main/inpaint_v26.fooocus.patch) as the file "Fooocus\models\inpaint\inpaint_v26.fooocus.patch" (the size of this file is 1.28GB).
+
+Fooocus always checks its local `Fooocus\models\checkpoints` folder in addition to custom checkpoint paths. Existing checkpoints are also recognized inside subfolders, so moving an installation does not trigger a duplicate download.
+
+To disable all automatic model downloads, use `run_no_download.bat` in the Windows standalone package, add `--disable-model-download` to the launch command, or set `"disable_model_download": true` in `config.txt`. Existing files remain usable, while missing checkpoints and optional feature models produce a clear error instead of accessing the network. Fooocus will use the requested checkpoint, a compatible previous default, or another installed checkpoint. The older `--disable-preset-download` option only disables preset downloads and still allows required support files to be downloaded.
 
 After Fooocus 2.1.60, you will also have `run_anime.bat` and `run_realistic.bat`. They are different model presets (and require different models, but they will be automatically downloaded). [Check here for more details](https://github.com/lllyasviel/Fooocus/discussions/679).
 

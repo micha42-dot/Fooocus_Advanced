@@ -15,11 +15,16 @@ def build_launcher():
     if not is_win32_standalone_build:
         return
 
-    presets = [None, 'anime', 'realistic']
+    launchers = {
+        'run.bat': '',
+        'run_anime.bat': '--preset anime',
+        'run_realistic.bat': '--preset realistic',
+        'run_no_download.bat': '--disable-model-download',
+    }
 
-    for preset in presets:
-        win32_cmd_preset = win32_cmd.replace('{cmds}', '' if preset is None else f'--preset {preset}')
-        bat_path = os.path.join(win32_root, 'run.bat' if preset is None else f'run_{preset}.bat')
+    for launcher_name, commands in launchers.items():
+        win32_cmd_preset = win32_cmd.replace('{cmds}', commands)
+        bat_path = os.path.join(win32_root, launcher_name)
         if not os.path.exists(bat_path):
             with open(bat_path, "w", encoding="utf-8") as f:
                 f.write(win32_cmd_preset)

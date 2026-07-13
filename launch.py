@@ -8,6 +8,8 @@ root = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(root)
 os.chdir(root)
 
+os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", os.path.join(root, "cache", "torchinductor"))
+
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
 if "GRADIO_SERVER_PORT" not in os.environ:
@@ -20,16 +22,19 @@ import fooocus_version
 
 from build_launcher import build_launcher
 from modules.launch_util import is_installed, run, python, run_pip, requirements_met, delete_folder_content
-from modules.model_loader import load_file_from_url
+from modules import model_loader
+
+load_file_from_url = model_loader.load_file_from_url
+set_model_downloads_enabled = getattr(model_loader, 'set_model_downloads_enabled', lambda enabled: None)
 
 REINSTALL_ALL = False
 TRY_INSTALL_XFORMERS = False
 
 
 def prepare_environment():
-    torch_index_url = os.environ.get('TORCH_INDEX_URL', "https://download.pytorch.org/whl/cu121")
+    torch_index_url = os.environ.get('TORCH_INDEX_URL', "https://download.pytorch.org/whl/cu128")
     torch_command = os.environ.get('TORCH_COMMAND',
-                                   f"pip install torch==2.1.0 torchvision==0.16.0 --extra-index-url {torch_index_url}")
+                                   f"pip install torch==2.10.0 torchvision==0.25.0 --extra-index-url {torch_index_url}")
     requirements_file = os.environ.get('REQS_FILE', "requirements_versions.txt")
 
     print(f"Python {sys.version}")
@@ -40,7 +45,7 @@ def prepare_environment():
 
     if TRY_INSTALL_XFORMERS:
         if REINSTALL_ALL or not is_installed("xformers"):
-            xformers_package = os.environ.get('XFORMERS_PACKAGE', 'xformers==0.0.23')
+            xformers_package = os.environ.get('XFORMERS_PACKAGE', 'xformers==0.0.35')
             if platform.system() == "Windows":
                 if platform.python_version().startswith("3.10"):
                     run_pip(f"install -U -I --no-deps {xformers_package}", "xformers", live=True)
@@ -87,6 +92,12 @@ if args.hf_mirror is not None:
 from modules import config
 from modules.hash_cache import init_cache
 
+model_downloads_disabled = (
+    getattr(args, 'disable_model_download', False)
+    or getattr(config, 'disable_model_download', False)
+)
+set_model_downloads_enabled(not model_downloads_disabled)
+
 os.environ["U2NET_HOME"] = config.path_inpaint
 
 os.environ['GRADIO_TEMP_DIR'] = config.temp_path
@@ -101,7 +112,49 @@ if config.temp_path_cleanup_on_launch:
 
 
 def download_models(default_model, previous_default_models, checkpoint_downloads, embeddings_downloads, lora_downloads, vae_downloads):
+    from modules.model_paths import find_file_in_folder_list, get_file_name_from_folder_list
     from modules.util import get_file_from_folder_list
+
+    local_checkpoint_path = os.path.join(root, 'models', 'checkpoints')
+    configured_paths = {
+        os.path.normcase(os.path.abspath(os.path.realpath(path)))
+        for path in config.paths_checkpoints
+    }
+    normalized_local_path = os.path.normcase(os.path.abspath(os.path.realpath(local_checkpoint_path)))
+    if os.path.isdir(local_checkpoint_path) and normalized_local_path not in configured_paths:
+        config.paths_checkpoints.append(local_checkpoint_path)
+        print(f'[Models] Added local checkpoint fallback: {local_checkpoint_path}')
+
+    def resolve_checkpoint(model_name):
+        filename = find_file_in_folder_list(model_name, config.paths_checkpoints, recursive=True)
+        if filename is None:
+            return None
+        return get_file_name_from_folder_list(filename, config.paths_checkpoints)
+
+    def select_installed_checkpoint(allow_any=False):
+        for model_name in [default_model] + list(previous_default_models):
+            resolved_name = resolve_checkpoint(model_name)
+            if resolved_name is not None:
+                return resolved_name
+
+        if allow_any:
+            installed_models = config.get_model_filenames(config.paths_checkpoints)
+            if installed_models:
+                return installed_models[0]
+        return None
+
+    if model_downloads_disabled:
+        selected_model = select_installed_checkpoint(allow_any=True)
+        print('[Models] Automatic model downloads are disabled.')
+        if selected_model is None:
+            searched_paths = ', '.join(config.paths_checkpoints)
+            raise FileNotFoundError(
+                'Automatic model downloads are disabled and no checkpoint was found. '
+                f'Searched: {searched_paths}'
+            )
+        if selected_model != default_model:
+            print(f'[Models] Using installed checkpoint [{selected_model}] instead of [{default_model}].')
+        return selected_model, {}
 
     for file_name, url in vae_approx_filenames:
         load_file_from_url(url=url, model_dir=config.path_vae_approx, file_name=file_name)
@@ -113,27 +166,43 @@ def download_models(default_model, previous_default_models, checkpoint_downloads
     )
 
     if args.disable_preset_download:
-        print('Skipped model download.')
-        return default_model, checkpoint_downloads
+        selected_model = select_installed_checkpoint(allow_any=True)
+        print('[Models] Skipped preset model downloads.')
+        if selected_model is not None:
+            return selected_model, {}
+        return default_model, {}
+
+    resolved_default_model = resolve_checkpoint(default_model)
+    if resolved_default_model is not None:
+        if resolved_default_model != default_model:
+            print(f'[Models] Found configured checkpoint as [{resolved_default_model}].')
+        default_model = resolved_default_model
 
     if not args.always_download_new_model:
-        if not os.path.isfile(get_file_from_folder_list(default_model, config.paths_checkpoints)):
+        if resolve_checkpoint(default_model) is None:
             for alternative_model_name in previous_default_models:
-                if os.path.isfile(get_file_from_folder_list(alternative_model_name, config.paths_checkpoints)):
+                resolved_alternative = resolve_checkpoint(alternative_model_name)
+                if resolved_alternative is not None:
                     print(f'You do not have [{default_model}] but you have [{alternative_model_name}].')
-                    print(f'Fooocus will use [{alternative_model_name}] to avoid downloading new models, '
+                    print(f'Fooocus will use [{resolved_alternative}] to avoid downloading new models, '
                           f'but you are not using the latest models.')
                     print('Use --always-download-new-model to avoid fallback and always get new models.')
                     checkpoint_downloads = {}
-                    default_model = alternative_model_name
+                    default_model = resolved_alternative
                     break
 
     for file_name, url in checkpoint_downloads.items():
+        existing_file = find_file_in_folder_list(file_name, config.paths_checkpoints, recursive=True)
+        if existing_file is not None:
+            print(f'[Models] Using existing checkpoint: {existing_file}')
+            continue
         model_dir = os.path.dirname(get_file_from_folder_list(file_name, config.paths_checkpoints))
         load_file_from_url(url=url, model_dir=model_dir, file_name=file_name)
     for file_name, url in embeddings_downloads.items():
         load_file_from_url(url=url, model_dir=config.path_embeddings, file_name=file_name)
     for file_name, url in lora_downloads.items():
+        if find_file_in_folder_list(file_name, config.paths_loras, recursive=True) is not None:
+            continue
         model_dir = os.path.dirname(get_file_from_folder_list(file_name, config.paths_loras))
         load_file_from_url(url=url, model_dir=model_dir, file_name=file_name)
     for file_name, url in vae_downloads.items():

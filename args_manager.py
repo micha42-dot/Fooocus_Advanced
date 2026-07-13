@@ -28,11 +28,60 @@ args_parser.parser.add_argument("--disable-metadata", action='store_true',
 args_parser.parser.add_argument("--disable-preset-download", action='store_true',
                                 help="Disables downloading models for presets", default=False)
 
+args_parser.parser.add_argument("--disable-model-download", action='store_true',
+                                help="Disables all automatic model downloads at startup and on preset changes",
+                                default=False)
+
 args_parser.parser.add_argument("--disable-enhance-output-sorting", action='store_true',
                                 help="Disables enhance output sorting for final image gallery.")
 
 args_parser.parser.add_argument("--enable-auto-describe-image", action='store_true',
                                 help="Enables automatic description of uov and enhance image when prompt is empty", default=False)
+
+args_parser.parser.add_argument("--attention-backend", choices=['auto', 'legacy', 'pytorch', 'xformers'],
+                                default='auto',
+                                help="Select the attention backend. Auto benchmarks PyTorch SDPA and xFormers at startup.")
+
+args_parser.parser.add_argument("--torch-compile", action='store_true',
+                                help="Compile the SDXL UNet on first use. The first generation is slower.")
+args_parser.parser.add_argument("--torch-compile-mode",
+                                choices=['default', 'reduce-overhead', 'max-autotune'],
+                                default='reduce-overhead',
+                                help="Optimization mode used by torch.compile.")
+args_parser.parser.add_argument("--torch-compile-profile", choices=['dynamic', 'resolution'],
+                                default='resolution',
+                                help="Compile one flexible graph or optimized graphs per latent resolution.")
+args_parser.parser.add_argument("--torch-compile-max-profiles", type=int, default=3,
+                                help="Maximum number of resolution-specific compiled UNet graphs.")
+
+args_parser.parser.add_argument("--unet-cache", choices=['off', 'conservative', 'balanced', 'aggressive'],
+                                default='off',
+                                help="Default DeepCache profile. Reuses internal SDXL features between denoising steps.")
+
+args_parser.parser.add_argument("--performance-log", type=str, nargs='?', const='performance.jsonl', default=None,
+                                help="Write generation timing, peak VRAM and output hashes to a JSONL file.")
+args_parser.parser.add_argument("--performance-run-label", type=str, default='default',
+                                help="Label stored in performance benchmark records.")
+
+args_parser.parser.add_argument("--tiled-upscale-batch-size", type=int, default=0,
+                                help="Tiles processed together by Tiled SDXL Detail Upscale. 0 selects automatically.")
+
+args_parser.parser.add_argument("--disable-latent-cache", action='store_true',
+                                help="Disable the in-memory VAE latent cache.")
+args_parser.parser.add_argument("--latent-cache-size", type=int, default=256, metavar='MB',
+                                help="Maximum memory used by cached VAE latents in MB.")
+args_parser.parser.add_argument("--disable-clip-cache", action='store_true',
+                                help="Disable the in-memory CLIP condition cache.")
+args_parser.parser.add_argument("--clip-cache-size", type=int, default=256, metavar='MB',
+                                help="Maximum memory used by cached CLIP conditions in MB.")
+
+args_parser.parser.add_argument("--vram-policy", choices=['auto', 'conservative', 'balanced', 'resident'],
+                                default='auto', help="Control how aggressively models remain in VRAM.")
+
+args_parser.parser.add_argument("--sam3-url", type=str, default='http://127.0.0.1:7866',
+                                help="URL of the optional local SAM 3 mask worker.")
+args_parser.parser.add_argument("--sam3-timeout", type=float, default=300.0,
+                                help="Timeout in seconds for SAM 3 mask requests.")
 
 args_parser.parser.add_argument("--always-download-new-model", action='store_true',
                                 help="Always download newer models", default=False)

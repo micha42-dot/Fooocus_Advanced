@@ -280,18 +280,25 @@ with shared.gradio_root:
                                                              choices=flags.inpaint_mask_cloth_category,
                                                              value=modules.config.default_inpaint_mask_cloth_category,
                                                              visible=False)
-                                inpaint_mask_dino_prompt_text = gr.Textbox(label='Detection prompt', value='', visible=False, info='Use singular whenever possible', placeholder='Describe what you want to detect.')
+                                inpaint_mask_dino_prompt_text = gr.Textbox(
+                                    label='Detection prompt', value='',
+                                    visible=modules.config.default_inpaint_mask_model in ['sam', 'sam3'],
+                                    info='Use singular whenever possible',
+                                    placeholder='Describe what you want to detect.')
                                 example_inpaint_mask_dino_prompt_text = gr.Dataset(
                                     samples=modules.config.example_enhance_detection_prompts,
                                     label='Detection Prompt Quick List',
                                     components=[inpaint_mask_dino_prompt_text],
-                                    visible=modules.config.default_inpaint_mask_model == 'sam')
+                                    visible=modules.config.default_inpaint_mask_model in ['sam', 'sam3'])
                                 example_inpaint_mask_dino_prompt_text.click(lambda x: x[0],
                                                                             inputs=example_inpaint_mask_dino_prompt_text,
                                                                             outputs=inpaint_mask_dino_prompt_text,
                                                                             show_progress=False, queue=False)
 
-                                with gr.Accordion("Advanced options", visible=False, open=False) as inpaint_mask_advanced_options:
+                                with gr.Accordion(
+                                        "Advanced options",
+                                        visible=modules.config.default_inpaint_mask_model in ['sam', 'sam3'],
+                                        open=False) as inpaint_mask_advanced_options:
                                     inpaint_mask_sam_model = gr.Dropdown(label='SAM model', choices=flags.inpaint_mask_sam_model, value=modules.config.default_inpaint_mask_sam_model)
                                     inpaint_mask_box_threshold = gr.Slider(label="Box Threshold", minimum=0.0, maximum=1.0, value=0.3, step=0.05)
                                     inpaint_mask_text_threshold = gr.Slider(label="Text Threshold", minimum=0.0, maximum=1.0, value=0.25, step=0.05)
@@ -305,7 +312,7 @@ with shared.gradio_root:
                                     sam_options = None
                                     if mask_model == 'u2net_cloth_seg':
                                         extras['cloth_category'] = cloth_category
-                                    elif mask_model == 'sam':
+                                    elif mask_model in ['sam', 'sam3']:
                                         sam_options = SAMOptions(
                                             dino_prompt=dino_prompt_text,
                                             dino_box_threshold=box_threshold,
@@ -322,8 +329,8 @@ with shared.gradio_root:
 
 
                                 inpaint_mask_model.change(lambda x: [gr.update(visible=x == 'u2net_cloth_seg')] +
-                                                                    [gr.update(visible=x == 'sam')] * 2 +
-                                                                    [gr.Dataset.update(visible=x == 'sam',
+                                                                    [gr.update(visible=x in ['sam', 'sam3'])] * 2 +
+                                                                    [gr.Dataset.update(visible=x in ['sam', 'sam3'],
                                                                                        samples=modules.config.example_enhance_detection_prompts)],
                                                           inputs=inpaint_mask_model,
                                                           outputs=[inpaint_mask_cloth_category,
@@ -416,12 +423,12 @@ with shared.gradio_root:
                                                                        info='Use singular whenever possible',
                                                                        placeholder='Describe what you want to detect.',
                                                                        interactive=True,
-                                                                       visible=modules.config.default_enhance_inpaint_mask_model == 'sam')
+                                                                       visible=modules.config.default_enhance_inpaint_mask_model in ['sam', 'sam3'])
                             example_enhance_mask_dino_prompt_text = gr.Dataset(
                                 samples=modules.config.example_enhance_detection_prompts,
                                 label='Detection Prompt Quick List',
                                 components=[enhance_mask_dino_prompt_text],
-                                visible=modules.config.default_enhance_inpaint_mask_model == 'sam')
+                                visible=modules.config.default_enhance_inpaint_mask_model in ['sam', 'sam3'])
                             example_enhance_mask_dino_prompt_text.click(lambda x: x[0],
                                                                         inputs=example_enhance_mask_dino_prompt_text,
                                                                         outputs=enhance_mask_dino_prompt_text,
@@ -445,7 +452,7 @@ with shared.gradio_root:
                                                                           interactive=True)
 
                                 with gr.Accordion("SAM Options",
-                                                  visible=modules.config.default_enhance_inpaint_mask_model == 'sam',
+                                                  visible=modules.config.default_enhance_inpaint_mask_model in ['sam', 'sam3'],
                                                   open=False) as sam_options:
                                     enhance_mask_sam_model = gr.Dropdown(label='SAM model',
                                                                          choices=flags.inpaint_mask_sam_model,
@@ -531,8 +538,8 @@ with shared.gradio_root:
 
                         enhance_mask_model.change(
                             lambda x: [gr.update(visible=x == 'u2net_cloth_seg')] +
-                                      [gr.update(visible=x == 'sam')] * 2 +
-                                      [gr.Dataset.update(visible=x == 'sam',
+                                      [gr.update(visible=x in ['sam', 'sam3'])] * 2 +
+                                      [gr.Dataset.update(visible=x in ['sam', 'sam3'],
                                                          samples=modules.config.example_enhance_detection_prompts)],
                             inputs=enhance_mask_model,
                             outputs=[enhance_mask_cloth_category, enhance_mask_dino_prompt_text, sam_options,
@@ -694,6 +701,11 @@ with shared.gradio_root:
                 guidance_scale = gr.Slider(label='Guidance Scale', minimum=1.0, maximum=30.0, step=0.01,
                                            value=modules.config.default_cfg_scale,
                                            info='Higher value means style is cleaner, vivider, and more artistic.')
+                with gr.Row():
+                    guidance_mode = gr.Dropdown(label='Guidance', choices=flags.guidance_modes,
+                                                value=modules.config.default_guidance_mode)
+                    deep_cache_profile = gr.Dropdown(label='DeepCache', choices=flags.deep_cache_profiles,
+                                                     value=modules.config.default_deep_cache_profile)
                 sharpness = gr.Slider(label='Image Sharpness', minimum=0.0, maximum=30.0, step=0.001,
                                       value=modules.config.default_sample_sharpness,
                                       info='Higher value means image and texture are sharper.')
@@ -913,7 +925,8 @@ with shared.gradio_root:
 
         load_data_outputs = [advanced_checkbox, image_number, prompt, negative_prompt, style_selections,
                              performance_selection, overwrite_step, overwrite_switch, aspect_ratios_selection,
-                             overwrite_width, overwrite_height, guidance_scale, sharpness, adm_scaler_positive,
+                             overwrite_width, overwrite_height, guidance_scale, sharpness, guidance_mode,
+                             deep_cache_profile, adm_scaler_positive,
                              adm_scaler_negative, adm_scaler_end, refiner_swap_method, adaptive_cfg, clip_skip,
                              base_model, refiner_model, refiner_switch, sampler_name, scheduler_name, vae_name,
                              seed_random, image_seed, inpaint_engine, inpaint_engine_state,
@@ -960,14 +973,15 @@ with shared.gradio_root:
                 .then(lambda: None, _js='()=>{refresh_style_localization();}') \
                 .then(inpaint_engine_state_change, inputs=[inpaint_engine_state] + enhance_inpaint_mode_ctrls, outputs=enhance_inpaint_engine_ctrls, queue=False, show_progress=False)
 
-        performance_selection.change(lambda x: [gr.update(interactive=not flags.Performance.has_restricted_features(x))] * 11 +
+        performance_selection.change(lambda x: [gr.update(interactive=not flags.Performance.has_restricted_features(x))] * 13 +
                                                [gr.update(visible=not flags.Performance.has_restricted_features(x))] * 1 +
                                                [gr.update(value=flags.Performance.has_restricted_features(x))] * 1,
                                      inputs=performance_selection,
                                      outputs=[
                                          guidance_scale, sharpness, adm_scaler_end, adm_scaler_positive,
                                          adm_scaler_negative, refiner_switch, refiner_model, sampler_name,
-                                         scheduler_name, adaptive_cfg, refiner_swap_method, negative_prompt, disable_intermediate_results
+                                         scheduler_name, adaptive_cfg, refiner_swap_method, guidance_mode,
+                                         deep_cache_profile, negative_prompt, disable_intermediate_results
                                      ], queue=False, show_progress=False)
 
         output_format.input(lambda x: gr.update(output_format=x), inputs=output_format)
@@ -1001,7 +1015,7 @@ with shared.gradio_root:
         ctrls += [
             prompt, negative_prompt, translate_prompts, style_selections,
             performance_selection, aspect_ratios_selection, image_number, output_format, image_seed,
-            read_wildcards_in_order, sharpness, guidance_scale
+            read_wildcards_in_order, sharpness, guidance_scale, guidance_mode, deep_cache_profile
         ]
 
         ctrls += [base_model, refiner_model, refiner_switch] + lora_ctrls
