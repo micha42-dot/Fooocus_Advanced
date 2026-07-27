@@ -250,6 +250,48 @@ function playNotification() {
     gradioApp().querySelector('#audio_notification audio')?.play();
 }
 
+function closeModelInfoPopovers() {
+    gradioApp().querySelectorAll('.model_info_panel').forEach(function(panel) {
+        if (panel.getClientRects().length > 0 &&
+                window.getComputedStyle(panel).display !== 'none') {
+            panel.querySelector('.model_info_close_button')?.click();
+        }
+    });
+}
+
+function prepareModelInfoPopovers() {
+    const app = gradioApp();
+    app.querySelectorAll('.model_info_button').forEach(function(button) {
+        button.title = 'More information';
+        button.setAttribute('aria-label', 'More information');
+    });
+    app.querySelectorAll('.model_info_close_button').forEach(function(button) {
+        button.title = 'Close information';
+        button.setAttribute('aria-label', 'Close information');
+    });
+
+    if (app.modelInfoPopoverEventsInstalled) {
+        return;
+    }
+    app.modelInfoPopoverEventsInstalled = true;
+
+    app.addEventListener('click', function(event) {
+        if (event.target.closest('.model_info_button') ||
+                event.target.closest('.model_info_panel')) {
+            return;
+        }
+        closeModelInfoPopovers();
+    });
+    document.addEventListener('keydown', function(event) {
+        if (event.key === 'Escape') {
+            closeModelInfoPopovers();
+        }
+    });
+}
+
+onUiLoaded(prepareModelInfoPopovers);
+onAfterUiUpdate(prepareModelInfoPopovers);
+
 function set_theme(theme) {
     var gradioURL = window.location.href;
     if (!gradioURL.includes('?__theme=')) {
