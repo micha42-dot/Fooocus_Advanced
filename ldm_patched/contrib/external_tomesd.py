@@ -126,7 +126,7 @@ def bipartite_soft_matching_random2d(metric: torch.Tensor,
     return merge, unmerge
 
 
-def get_functions(x, ratio, original_shape):
+def get_functions(x, ratio, original_shape, deterministic=True):
     b, c, original_h, original_w = original_shape
     original_tokens = original_h * original_w
     downsample = int(math.ceil(math.sqrt(original_tokens // x.shape[1])))
@@ -138,7 +138,7 @@ def get_functions(x, ratio, original_shape):
         w = int(math.ceil(original_w / downsample))
         h = int(math.ceil(original_h / downsample))
         r = int(x.shape[1] * ratio)
-        no_rand = False
+        no_rand = bool(deterministic)
         m, u = bipartite_soft_matching_random2d(x, w, h, stride_x, stride_y, r, no_rand)
         return m, u
 
@@ -158,12 +158,13 @@ class TomePatchModel:
 
     CATEGORY = "_for_testing"
 
-    def patch(self, model, ratio):
+    def patch(self, model, ratio, deterministic=True):
         self.u = None
         def tomesd_m(q, k, v, extra_options):
             #NOTE: In the reference code get_functions takes x (input of the transformer block) as the argument instead of q
             #however from my basic testing it seems that using q instead gives better results
-            m, self.u = get_functions(q, ratio, extra_options["original_shape"])
+            m, self.u = get_functions(
+                q, ratio, extra_options["original_shape"], deterministic=deterministic)
             return m(q), k, v
         def tomesd_u(n, extra_options):
             return self.u(n)
