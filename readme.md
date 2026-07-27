@@ -3,24 +3,59 @@
 I consider Fooocus to be one of the most beautiful and elegant text-to-image tools, and I still regard SDXL as a relevant model family because it is fast and continues to be maintained by a vibrant community. I have therefore decided to continue maintaining Fooocus mashb1t's 1-Up Edition and keeping it alive, as far as I am able. Above all, so that others can build on it.
 
 I'm cheekily calling it simply Fooocus Advanced.
+## What's New in Fooocus Advanced 0.9.1 Experimental
 
-### New features
+Fooocus Advanced builds on Fooocus 2.6.5 and mashb1t's 1-Up Edition while preserving the familiar, focused Fooocus workflow. This experimental release adds new quality modes, performance optimizations, improved upscaling, modern masking tools, external API models, and more portable model handling.
 
-- **Tiled SDXL Detail Upscale** for high-resolution upscaling with additional diffusion-based detail reconstruction and automatic tile batching.
-- **Optional SAM 3 integration** for more accurate object detection, masks, and Enhance workflows.
-- **Modern APG and CFG++ guidance** for reducing oversaturation and improving sample quality. CFG++ includes sampler-correct renoising for the Euler and DPM++ 2M families.
-- **DeepCache feature reuse** for faster SDXL diffusion with configurable `conservative`, `balanced`, and `aggressive` quality/performance profiles.
-- **Smarter VRAM management** with adaptive policies for low-, medium-, and high-VRAM systems.
-- **VAE latent and CLIP condition caches** to avoid repeated encoding and reduce generation times.
-- **Automatic attention backend selection** with runtime benchmarking of PyTorch SDPA and xFormers.
-- **Optional `torch.compile` profiles** optimized for frequently used image resolutions.
-- **Performance logging and comparison tools** for generation time, peak VRAM usage, and output consistency.
-- **Improved model handling** with portable paths, nested-folder detection, reuse of existing checkpoints, and an option to disable all automatic model downloads.
+### Image Quality and Upscaling
 
+- **Tiled SDXL Detail Upscale 2.0** reconstructs additional details through diffusion-based tiled processing. It includes balanced tile planning, automatic batching, seam-aware blending, low-frequency color anchoring, reflection padding, stable regional seeds, and automatic VRAM fallback.
+- **Quality 10 (AYS)** provides a fast 10-step SDXL quality mode using a tuned Align Your Steps schedule with DPM++ 2M SDE.
+- **Modern guidance modes** add APG, CFG++, and PAG alongside standard classifier-free guidance. These modes can reduce oversaturation, improve detail, and strengthen image structure without requiring additional models.
+- **Optional SAM 3 integration** improves object detection, mask generation, and Enhance workflows. If the local SAM 3 worker is unavailable, Fooocus automatically falls back to GroundingDINO and classic SAM.
 
-### Windows installation
+### Performance Improvements
 
-To install Fooocus Advanced, download two packages: **Fooocus Advanced** itself and **Python Embedded**, which contains the Python environment required to run Fooocus Advanced.
+- **DeepCache feature reuse** reduces repeated UNet work through configurable `conservative`, `balanced`, and `aggressive` profiles.
+- **Deterministic ToMeSD acceleration** reduces self-attention workload by merging similar tokens, with multiple quality and performance profiles.
+- **Smarter VRAM management** automatically adapts to low-, medium-, and high-VRAM systems and can downgrade its policy when memory pressure is detected.
+- **VAE latent and CLIP condition caches** avoid repeated encoding work across compatible generations.
+- **Automatic attention backend selection** benchmarks available PyTorch SDPA and xFormers implementations and selects the most suitable backend.
+- **Optional `torch.compile` profiles** cache optimized UNet graphs for frequently used image resolutions.
+- **Performance logging and comparison tools** record generation time, individual processing stages, peak VRAM usage, workload signatures, image hashes, MAE, and PSNR.
+
+### External API Models
+
+- Generate images through **fal.ai** or **Replicate** by selecting **Other via API** as the base model.
+- Supported models include **Krea 2**, **FLUX.1 Krea**, **FLUX.2 Klein**, **Nano Banana Pro**, **Nano Banana 2**, **MiniMax Image-01**, and **Dreamina 3.1**, depending on provider availability.
+- API images can be generated and saved directly without requiring a local Refiner.
+- A full local SDXL checkpoint can optionally perform a low-denoise refinement pass on the returned API image.
+- API generations are saved through the normal Fooocus output pipeline and included in the daily HTML log with prompt, styles, seed, provider, model, and refinement information.
+- API keys can remain temporary or be stored locally in `Fooocus/.env` using **Save key**. **Delete saved key** removes the selected provider's stored credential.
+- Stored credentials are never returned to the browser or written to generation logs. The `.env` file is excluded from Git and receives restrictive permissions where supported.
+
+### Interface Improvements
+
+- Small, unobtrusive information buttons explain Guidance, DeepCache, ToMeSD, mask-generation models, and the classic SAM `vit_b`, `vit_l`, and `vit_h` variants.
+- Information is displayed in responsive floating popovers instead of expanding or shifting the interface.
+- Popovers can be closed using the close button, by clicking outside, or by pressing `Esc`.
+- SAM 3 is clearly marked as the recommended latest enhancement model.
+
+### Model Handling and Portability
+
+- Existing checkpoints are detected and reused instead of downloaded again.
+- Checkpoints inside nested model folders are recognized.
+- Model paths remain portable when the installation directory is moved.
+- Automatic model downloads can be disabled completely through `run_no_download.bat`, `--disable-model-download`, or `config.txt`.
+- Missing models produce clear errors instead of silently accessing the network.
+
+### Windows Distribution
+
+The Windows release is distributed as two separate packages:
+
+- **Fooocus Advanced**, containing the application and BAT launchers.
+- **Python Embedded**, containing the isolated Python environment and required runtime dependencies.
+
 
 Extract both packages into the same directory. The `python_embeded` folder from the Python Embedded package must be placed next to the BAT files and the `Fooocus` folder, not inside the `Fooocus` folder. The final folder structure should look like this:
 
