@@ -10,6 +10,7 @@ import modules.html
 import modules.async_worker as worker
 import modules.constants as constants
 import modules.flags as flags
+import modules.external_api as external_api
 import modules.gradio_hijack as grh
 import modules.style_sorter as style_sorter
 import modules.meta_parser
@@ -145,7 +146,7 @@ def inpaint_mode_change(mode, inpaint_engine_version):
 
 reload_javascript()
 
-title = f'Fooocus {fooocus_version.version}'
+title = fooocus_version.full_version
 
 if isinstance(args_manager.args.preset, str):
     title += ' ' + args_manager.args.preset
@@ -270,12 +271,77 @@ with shared.gradio_root:
                                 gr.HTML('* Powered by Fooocus Inpaint Engine <a href="https://github.com/lllyasviel/Fooocus/discussions/414" target="_blank">\U0001F4D4 Documentation</a>')
                                 example_inpaint_prompts.click(lambda x: x[0], inputs=example_inpaint_prompts, outputs=inpaint_additional_prompt, show_progress=False, queue=False)
 
+                            mask_generation_model_info_text = (
+                                '**Mask generation models**\n\n'
+                                '- `u2net` - General foreground and background separation with solid quality.\n'
+                                '- `u2netp` - Smaller and faster U2Net variant with less precise boundaries.\n'
+                                '- `u2net_human_seg` - Specialized for people and human silhouettes.\n'
+                                '- `u2net_cloth_seg` - Specialized for full, upper, or lower clothing regions.\n'
+                                '- `silueta` - Compact general-purpose foreground segmentation.\n'
+                                '- `isnet-general-use` - Detailed general-purpose foreground and background masks.\n'
+                                '- `isnet-anime` - Specialized for anime characters and illustrations.\n'
+                                '- `sam` - Detection Prompt object masks using GroundingDINO and SAM 1.\n'
+                                '- `sam3` - Recommended latest Detection Prompt model; uses the local SAM 3 '
+                                'worker and falls back to SAM 1 when unavailable.'
+                            )
+                            sam_model_info_text = (
+                                '**SAM 1 model variants**\n\n'
+                                '- `vit_b` - Fastest and lightest; recommended fallback for most systems.\n'
+                                '- `vit_l` - More accurate boundaries with higher VRAM use and slower processing.\n'
+                                '- `vit_h` - Highest classic SAM detail, but also the largest and slowest option.\n\n'
+                                '*When SAM 3 is selected, this setting is used only for the automatic SAM 1 fallback.*'
+                            )
+
+                            def toggle_model_info(is_visible):
+                                next_visible = not is_visible
+                                return gr.update(visible=next_visible), next_visible
+
+                            def attach_model_info(button, info_text):
+                                info_visible = gr.State(False)
+                                with gr.Column(
+                                        visible=False,
+                                        elem_classes='model_info_panel') as info_panel:
+                                    close_button = gr.Button(
+                                        value='\u00d7',
+                                        size='sm',
+                                        min_width=22,
+                                        scale=0,
+                                        elem_classes='model_info_close_button')
+                                    gr.Markdown(
+                                        value=info_text,
+                                        elem_classes='model_info_content')
+                                button.click(
+                                    toggle_model_info,
+                                    inputs=info_visible,
+                                    outputs=[info_panel, info_visible],
+                                    queue=False,
+                                    show_progress=False)
+                                close_button.click(
+                                    lambda: (gr.update(visible=False), False),
+                                    outputs=[info_panel, info_visible],
+                                    queue=False,
+                                    show_progress=False)
+                                return info_panel
+
                             with gr.Column(visible=modules.config.default_inpaint_advanced_masking_checkbox) as inpaint_mask_generation_col:
                                 inpaint_mask_image = grh.Image(label='Mask Upload', source='upload', type='numpy', tool='sketch', height=500, brush_color="#FFFFFF", mask_opacity=1, elem_id='inpaint_mask_canvas')
                                 invert_mask_checkbox = gr.Checkbox(label='Invert Mask When Generating', value=modules.config.default_invert_mask_checkbox)
-                                inpaint_mask_model = gr.Dropdown(label='Mask generation model',
-                                                                 choices=flags.inpaint_mask_models,
-                                                                 value=modules.config.default_inpaint_mask_model)
+                                with gr.Row(equal_height=True):
+                                    inpaint_mask_model = gr.Dropdown(
+                                        label='Mask generation model',
+                                        choices=flags.inpaint_mask_model_choices,
+                                        value=flags.display_inpaint_mask_model(
+                                            modules.config.default_inpaint_mask_model),
+                                        scale=12)
+                                    inpaint_mask_model_info_button = gr.Button(
+                                        value='i',
+                                        size='sm',
+                                        min_width=22,
+                                        scale=0,
+                                        elem_classes='model_info_button')
+                                inpaint_mask_model_info = attach_model_info(
+                                    inpaint_mask_model_info_button,
+                                    mask_generation_model_info_text)
                                 inpaint_mask_cloth_category = gr.Dropdown(label='Cloth category',
                                                              choices=flags.inpaint_mask_cloth_category,
                                                              value=modules.config.default_inpaint_mask_cloth_category,
@@ -299,7 +365,21 @@ with shared.gradio_root:
                                         "Advanced options",
                                         visible=modules.config.default_inpaint_mask_model in ['sam', 'sam3'],
                                         open=False) as inpaint_mask_advanced_options:
-                                    inpaint_mask_sam_model = gr.Dropdown(label='SAM model', choices=flags.inpaint_mask_sam_model, value=modules.config.default_inpaint_mask_sam_model)
+                                    with gr.Row(equal_height=True):
+                                        inpaint_mask_sam_model = gr.Dropdown(
+                                            label='SAM model',
+                                            choices=flags.inpaint_mask_sam_model,
+                                            value=modules.config.default_inpaint_mask_sam_model,
+                                            scale=12)
+                                        inpaint_sam_info_button = gr.Button(
+                                            value='i',
+                                            size='sm',
+                                            min_width=22,
+                                            scale=0,
+                                            elem_classes='model_info_button')
+                                    inpaint_sam_info = attach_model_info(
+                                        inpaint_sam_info_button,
+                                        sam_model_info_text)
                                     inpaint_mask_box_threshold = gr.Slider(label="Box Threshold", minimum=0.0, maximum=1.0, value=0.3, step=0.05)
                                     inpaint_mask_text_threshold = gr.Slider(label="Text Threshold", minimum=0.0, maximum=1.0, value=0.25, step=0.05)
                                     inpaint_mask_sam_max_detections = gr.Slider(label="Maximum number of detections", info="Set to 0 to detect all", minimum=0, maximum=10, value=modules.config.default_sam_max_detections, step=1, interactive=True)
@@ -308,6 +388,7 @@ with shared.gradio_root:
                                 def generate_mask(image, mask_model, cloth_category, dino_prompt_text, sam_model, box_threshold, text_threshold, sam_max_detections, dino_erode_or_dilate, dino_debug):
                                     from extras.inpaint_mask import generate_mask_from_image
 
+                                    mask_model = flags.normalize_inpaint_mask_model(mask_model)
                                     extras = {}
                                     sam_options = None
                                     if mask_model == 'u2net_cloth_seg':
@@ -328,9 +409,9 @@ with shared.gradio_root:
                                     return mask
 
 
-                                inpaint_mask_model.change(lambda x: [gr.update(visible=x == 'u2net_cloth_seg')] +
-                                                                    [gr.update(visible=x in ['sam', 'sam3'])] * 2 +
-                                                                    [gr.Dataset.update(visible=x in ['sam', 'sam3'],
+                                inpaint_mask_model.change(lambda x: [gr.update(visible=flags.normalize_inpaint_mask_model(x) == 'u2net_cloth_seg')] +
+                                                                    [gr.update(visible=flags.normalize_inpaint_mask_model(x) in ['sam', 'sam3'])] * 2 +
+                                                                    [gr.Dataset.update(visible=flags.normalize_inpaint_mask_model(x) in ['sam', 'sam3'],
                                                                                        samples=modules.config.example_enhance_detection_prompts)],
                                                           inputs=inpaint_mask_model,
                                                           outputs=[inpaint_mask_cloth_category,
@@ -442,9 +523,22 @@ with shared.gradio_root:
                                                                  elem_id='enhance_negative_prompt')
 
                             with gr.Accordion("Detection", open=False):
-                                enhance_mask_model = gr.Dropdown(label='Mask generation model',
-                                                                 choices=flags.inpaint_mask_models,
-                                                                 value=modules.config.default_enhance_inpaint_mask_model)
+                                with gr.Row(equal_height=True):
+                                    enhance_mask_model = gr.Dropdown(
+                                        label='Mask generation model',
+                                        choices=flags.inpaint_mask_model_choices,
+                                        value=flags.display_inpaint_mask_model(
+                                            modules.config.default_enhance_inpaint_mask_model),
+                                        scale=12)
+                                    enhance_mask_model_info_button = gr.Button(
+                                        value='i',
+                                        size='sm',
+                                        min_width=22,
+                                        scale=0,
+                                        elem_classes='model_info_button')
+                                enhance_mask_model_info = attach_model_info(
+                                    enhance_mask_model_info_button,
+                                    mask_generation_model_info_text)
                                 enhance_mask_cloth_category = gr.Dropdown(label='Cloth category',
                                                                           choices=flags.inpaint_mask_cloth_category,
                                                                           value=modules.config.default_inpaint_mask_cloth_category,
@@ -454,10 +548,22 @@ with shared.gradio_root:
                                 with gr.Accordion("SAM Options",
                                                   visible=modules.config.default_enhance_inpaint_mask_model in ['sam', 'sam3'],
                                                   open=False) as sam_options:
-                                    enhance_mask_sam_model = gr.Dropdown(label='SAM model',
-                                                                         choices=flags.inpaint_mask_sam_model,
-                                                                         value=modules.config.default_inpaint_mask_sam_model,
-                                                                         interactive=True)
+                                    with gr.Row(equal_height=True):
+                                        enhance_mask_sam_model = gr.Dropdown(
+                                            label='SAM model',
+                                            choices=flags.inpaint_mask_sam_model,
+                                            value=modules.config.default_inpaint_mask_sam_model,
+                                            interactive=True,
+                                            scale=12)
+                                        enhance_sam_info_button = gr.Button(
+                                            value='i',
+                                            size='sm',
+                                            min_width=22,
+                                            scale=0,
+                                            elem_classes='model_info_button')
+                                    enhance_sam_info = attach_model_info(
+                                        enhance_sam_info_button,
+                                        sam_model_info_text)
                                     enhance_mask_box_threshold = gr.Slider(label="Box Threshold", minimum=0.0,
                                                                            maximum=1.0, value=0.3, step=0.05,
                                                                            interactive=True)
@@ -537,9 +643,9 @@ with shared.gradio_root:
                         ], show_progress=False, queue=False)
 
                         enhance_mask_model.change(
-                            lambda x: [gr.update(visible=x == 'u2net_cloth_seg')] +
-                                      [gr.update(visible=x in ['sam', 'sam3'])] * 2 +
-                                      [gr.Dataset.update(visible=x in ['sam', 'sam3'],
+                            lambda x: [gr.update(visible=flags.normalize_inpaint_mask_model(x) == 'u2net_cloth_seg')] +
+                                      [gr.update(visible=flags.normalize_inpaint_mask_model(x) in ['sam', 'sam3'])] * 2 +
+                                      [gr.Dataset.update(visible=flags.normalize_inpaint_mask_model(x) in ['sam', 'sam3'],
                                                          samples=modules.config.example_enhance_detection_prompts)],
                             inputs=enhance_mask_model,
                             outputs=[enhance_mask_cloth_category, enhance_mask_dino_prompt_text, sam_options,
@@ -665,9 +771,23 @@ with shared.gradio_root:
 
             with gr.Tab(label='Models'):
                 with gr.Group():
+                    initial_base_model = modules.config.default_base_model_name
+                    initial_refiner_model = external_api.select_refiner_for_base(
+                        initial_base_model,
+                        modules.config.default_refiner_model_name,
+                        reset_api_refiner=True)
+                    initial_api_mode = initial_base_model == external_api.API_BASE_MODEL
                     with gr.Row():
-                        base_model = gr.Dropdown(label='Base Model (SDXL only)', choices=modules.config.model_filenames, value=modules.config.default_base_model_name, show_label=True)
-                        refiner_model = gr.Dropdown(label='Refiner (SDXL or SD 1.5)', choices=['None'] + modules.config.model_filenames, value=modules.config.default_refiner_model_name, show_label=True)
+                        base_model = gr.Dropdown(
+                            label='Base Model (SDXL or API)',
+                            choices=modules.config.model_filenames + [external_api.API_BASE_MODEL],
+                            value=initial_base_model,
+                            show_label=True)
+                        refiner_model = gr.Dropdown(
+                            label='Refiner (Optional, SDXL or SD 1.5)',
+                            choices=['None'] + modules.config.model_filenames,
+                            value=initial_refiner_model,
+                            show_label=True)
 
                     refiner_switch = gr.Slider(label='Refiner Switch At', minimum=0.1, maximum=1.0, step=0.0001,
                                                info='Use 0.4 for SD1.5 realistic models; '
@@ -675,10 +795,58 @@ with shared.gradio_root:
                                                     'or 0.8 for XL-refiners; '
                                                     'or any value for switching two SDXL models.',
                                                value=modules.config.default_refiner_switch,
-                                               visible=modules.config.default_refiner_model_name != 'None')
+                                               visible=initial_refiner_model != 'None' and not initial_api_mode)
 
-                    refiner_model.change(lambda x: gr.update(visible=x != 'None'),
-                                         inputs=refiner_model, outputs=refiner_switch, show_progress=False, queue=False)
+                    with gr.Column(visible=initial_api_mode) as api_model_group:
+                        api_model = gr.Dropdown(
+                            label='External API Model',
+                            choices=external_api.get_model_choices(external_api.PROVIDER_FAL),
+                            value=external_api.get_default_model_label(external_api.PROVIDER_FAL))
+                        api_refine_strength = gr.Slider(
+                            label='Local SDXL Refine Strength',
+                            minimum=0.05,
+                            maximum=0.6,
+                            step=0.01,
+                            value=0.25,
+                            visible=initial_api_mode and initial_refiner_model != 'None',
+                            info='Uses the selected full SDXL checkpoint as a local low-denoise image pass.')
+
+                    def update_model_controls(base_name, refiner_name):
+                        is_api = base_name == external_api.API_BASE_MODEL
+                        has_refiner = refiner_name != 'None'
+                        return (
+                            gr.update(visible=is_api),
+                            gr.update(visible=has_refiner and not is_api),
+                            gr.update(visible=has_refiner and is_api),
+                        )
+
+                    def base_model_changed(base_name, refiner_name):
+                        refiner_name = external_api.select_refiner_for_base(
+                            base_name, refiner_name, reset_api_refiner=True)
+                        api_group_update, refiner_switch_update, api_refine_update = \
+                            update_model_controls(base_name, refiner_name)
+                        return (
+                            api_group_update,
+                            gr.update(value=refiner_name),
+                            refiner_switch_update,
+                            api_refine_update,
+                        )
+
+                    base_model.change(
+                        base_model_changed,
+                        inputs=[base_model, refiner_model],
+                        outputs=[
+                            api_model_group, refiner_model,
+                            refiner_switch, api_refine_strength,
+                        ],
+                        show_progress=False,
+                        queue=False)
+                    refiner_model.change(
+                        update_model_controls,
+                        inputs=[base_model, refiner_model],
+                        outputs=[api_model_group, refiner_switch, api_refine_strength],
+                        show_progress=False,
+                        queue=False)
 
                 with gr.Group():
                     lora_ctrls = []
@@ -697,15 +865,223 @@ with shared.gradio_root:
 
                 with gr.Row():
                     refresh_files = gr.Button(label='Refresh', value='\U0001f504 Refresh All Files', variant='secondary', elem_classes='refresh_button')
+
+            with gr.Tab(label='API'):
+                api_provider = gr.Dropdown(
+                    label='Provider',
+                    choices=external_api.PROVIDERS,
+                    value=external_api.PROVIDER_FAL)
+                fal_api_key = gr.Textbox(
+                    label='fal.ai API Key',
+                    type='password',
+                    placeholder='Uses a saved .env key or FAL_KEY when left empty.')
+                replicate_api_key = gr.Textbox(
+                    label='Replicate API Token',
+                    type='password',
+                    placeholder='Uses a saved .env key or REPLICATE_API_TOKEN when left empty.',
+                    visible=False)
+                api_key_status = gr.Markdown(
+                    value=f'**Credential status:** '
+                          f'{external_api.get_api_key_status(external_api.PROVIDER_FAL)}')
+                with gr.Row():
+                    save_api_key_button = gr.Button(
+                        value='Save key',
+                        variant='secondary')
+                    delete_api_key_button = gr.Button(
+                        value='Delete saved key',
+                        variant='secondary')
+                api_enhance_prompt = gr.Checkbox(
+                    label='Provider Prompt Enhancement',
+                    value=True,
+                    visible=False)
+                api_creativity = gr.Dropdown(
+                    label='Krea Creativity',
+                    choices=['raw', 'low', 'medium', 'high'],
+                    value='medium')
+                api_do_not_store = gr.Checkbox(
+                    label='Do not store fal.ai inputs and outputs',
+                    value=True)
+
+                def render_api_key_status(provider, message=None):
+                    status = external_api.get_api_key_status(provider)
+                    prefix = f'**{message}**  \n' if message else ''
+                    return f'{prefix}**Credential status:** {status}'
+
+                def save_api_key_clicked(provider, fal_key, replicate_key):
+                    key = fal_key if provider == external_api.PROVIDER_FAL else replicate_key
+                    try:
+                        external_api.save_api_key(provider, key)
+                    except external_api.ExternalAPIError as exc:
+                        return gr.update(), gr.update(), render_api_key_status(
+                            provider, f'Could not save key: {exc}')
+                    return (
+                        gr.update(value=''),
+                        gr.update(value=''),
+                        render_api_key_status(provider, 'Key saved locally'),
+                    )
+
+                def delete_api_key_clicked(provider):
+                    try:
+                        was_deleted = external_api.delete_saved_api_key(provider)
+                    except external_api.ExternalAPIError as exc:
+                        return gr.update(), gr.update(), render_api_key_status(
+                            provider, f'Could not delete key: {exc}')
+                    message = 'Saved key deleted' if was_deleted else 'No saved key was found'
+                    return (
+                        gr.update(value=''),
+                        gr.update(value=''),
+                        render_api_key_status(provider, message),
+                    )
+
+                save_api_key_button.click(
+                    save_api_key_clicked,
+                    inputs=[api_provider, fal_api_key, replicate_api_key],
+                    outputs=[fal_api_key, replicate_api_key, api_key_status],
+                    queue=False,
+                    show_progress=False)
+                delete_api_key_button.click(
+                    delete_api_key_clicked,
+                    inputs=api_provider,
+                    outputs=[fal_api_key, replicate_api_key, api_key_status],
+                    queue=False,
+                    show_progress=False)
+
+                def api_provider_changed(provider):
+                    is_fal = provider == external_api.PROVIDER_FAL
+                    choices = external_api.get_model_choices(provider)
+                    default_model = external_api.resolve_model(provider, choices[0])
+                    return (
+                        gr.update(choices=choices, value=choices[0]),
+                        gr.update(visible=is_fal),
+                        gr.update(visible=not is_fal),
+                        gr.update(visible=is_fal),
+                        gr.update(visible=default_model.payload_kind in {
+                            'fal_minimax', 'fal_dreamina',
+                            'replicate_minimax', 'replicate_dreamina',
+                        }),
+                        gr.update(visible=default_model.payload_kind == 'fal_krea'),
+                        render_api_key_status(provider),
+                    )
+
+                api_provider.change(
+                    api_provider_changed,
+                    inputs=api_provider,
+                    outputs=[
+                        api_model, fal_api_key, replicate_api_key, api_do_not_store,
+                        api_enhance_prompt, api_creativity, api_key_status,
+                    ],
+                    queue=False,
+                    show_progress=False)
+
+                def api_model_changed(provider, model_value):
+                    model = external_api.resolve_model(provider, model_value)
+                    return (
+                        gr.update(visible=model.payload_kind in {
+                            'fal_minimax', 'fal_dreamina',
+                            'replicate_minimax', 'replicate_dreamina',
+                        }),
+                        gr.update(visible=model.payload_kind == 'fal_krea'),
+                    )
+
+                api_model.change(
+                    api_model_changed,
+                    inputs=[api_provider, api_model],
+                    outputs=[api_enhance_prompt, api_creativity],
+                    queue=False,
+                    show_progress=False)
+
             with gr.Tab(label='Advanced'):
                 guidance_scale = gr.Slider(label='Guidance Scale', minimum=1.0, maximum=30.0, step=0.01,
                                            value=modules.config.default_cfg_scale,
                                            info='Higher value means style is cleaner, vivider, and more artistic.')
+
+                guidance_info_text = (
+                    '**Guidance modes**\n\n'
+                    '- `Standard` - Original classifier-free guidance; widest compatibility and safest baseline.\n'
+                    '- `APG` - Reduces oversaturation and color artifacts at stronger CFG values.\n'
+                    '- `CFG++` - Uses sampler-correct renoising for more natural detail; supported by Euler '
+                    'and DPM++ 2M samplers.\n'
+                    '- `PAG` - Adds structure and detail through perturbed attention and can also work at CFG 1. '
+                    'Use PAG Scale to control its strength.\n\n'
+                    '*APG and CFG++ require CFG above 1. PAG is disabled automatically when an incompatible '
+                    'execution path is active.*'
+                )
+                deep_cache_info_text = (
+                    '**DeepCache profiles**\n\n'
+                    '- `off` - Exact UNet execution without feature reuse.\n'
+                    '- `conservative` - Reuses features every 2 steps through the middle 20-80% of sampling.\n'
+                    '- `balanced` - Reuses features every 3 steps through 15-90%; recommended starting point.\n'
+                    '- `aggressive` - Uses a wider 4-step reuse interval through 10-95% for maximum speed.\n\n'
+                    '*Higher profiles trade more approximation for speed. DeepCache needs at least 12 steps '
+                    'and is bypassed automatically on incompatible workloads.*'
+                )
+                tomesd_info_text = (
+                    '**ToMeSD profiles**\n\n'
+                    '- `off` - Full self-attention without token merging.\n'
+                    '- `conservative` - Merges 15% of similar tokens for a small speed gain.\n'
+                    '- `balanced` - Merges 30%; recommended balance of speed and detail retention.\n'
+                    '- `aggressive` - Merges 50% for the largest speed gain and greatest quality risk.\n\n'
+                    '*ToMeSD is deterministic and is disabled automatically with PAG or `torch.compile`. '
+                    'When combined with ToMeSD, DeepCache is disabled.*'
+                )
+
                 with gr.Row():
-                    guidance_mode = gr.Dropdown(label='Guidance', choices=flags.guidance_modes,
-                                                value=modules.config.default_guidance_mode)
-                    deep_cache_profile = gr.Dropdown(label='DeepCache', choices=flags.deep_cache_profiles,
-                                                     value=modules.config.default_deep_cache_profile)
+                    with gr.Column(scale=1, min_width=200):
+                        with gr.Row(equal_height=True):
+                            guidance_mode = gr.Dropdown(
+                                label='Guidance',
+                                choices=flags.guidance_modes,
+                                value=modules.config.default_guidance_mode,
+                                scale=12)
+                            guidance_info_button = gr.Button(
+                                value='i',
+                                size='sm',
+                                min_width=22,
+                                scale=0,
+                                elem_classes='model_info_button')
+                        guidance_info = attach_model_info(
+                            guidance_info_button,
+                            guidance_info_text)
+
+                    with gr.Column(scale=1, min_width=200):
+                        with gr.Row(equal_height=True):
+                            deep_cache_profile = gr.Dropdown(
+                                label='DeepCache',
+                                choices=flags.deep_cache_profiles,
+                                value=modules.config.default_deep_cache_profile,
+                                scale=12)
+                            deep_cache_info_button = gr.Button(
+                                value='i',
+                                size='sm',
+                                min_width=22,
+                                scale=0,
+                                elem_classes='model_info_button')
+                        deep_cache_info = attach_model_info(
+                            deep_cache_info_button,
+                            deep_cache_info_text)
+
+                    with gr.Column(scale=1, min_width=200):
+                        with gr.Row(equal_height=True):
+                            tomesd_profile = gr.Dropdown(
+                                label='ToMeSD',
+                                choices=flags.tomesd_profiles,
+                                value=modules.config.default_tomesd_profile,
+                                scale=12)
+                            tomesd_info_button = gr.Button(
+                                value='i',
+                                size='sm',
+                                min_width=22,
+                                scale=0,
+                                elem_classes='model_info_button')
+                        tomesd_info = attach_model_info(
+                            tomesd_info_button,
+                            tomesd_info_text)
+                pag_scale = gr.Slider(label='PAG Scale', minimum=0.0, maximum=10.0, step=0.1,
+                                      value=modules.config.default_pag_scale,
+                                      visible=modules.config.default_guidance_mode == 'PAG')
+                guidance_mode.change(lambda mode: gr.update(visible=mode == 'PAG'),
+                                     inputs=guidance_mode, outputs=pag_scale,
+                                     queue=False, show_progress=False)
                 sharpness = gr.Slider(label='Image Sharpness', minimum=0.0, maximum=30.0, step=0.001,
                                       value=modules.config.default_sample_sharpness,
                                       info='Higher value means image and texture are sharper.')
@@ -887,7 +1263,7 @@ with shared.gradio_root:
 
                 def refresh_files_clicked():
                     modules.config.update_files()
-                    results = [gr.update(choices=modules.config.model_filenames)]
+                    results = [gr.update(choices=modules.config.model_filenames + [external_api.API_BASE_MODEL])]
                     results += [gr.update(choices=['None'] + modules.config.model_filenames)]
                     results += [gr.update(choices=[flags.default_vae] + modules.config.vae_filenames)]
                     if not args_manager.args.disable_preset_selection:
@@ -926,7 +1302,7 @@ with shared.gradio_root:
         load_data_outputs = [advanced_checkbox, image_number, prompt, negative_prompt, style_selections,
                              performance_selection, overwrite_step, overwrite_switch, aspect_ratios_selection,
                              overwrite_width, overwrite_height, guidance_scale, sharpness, guidance_mode,
-                             deep_cache_profile, adm_scaler_positive,
+                             pag_scale, deep_cache_profile, tomesd_profile, adm_scaler_positive,
                              adm_scaler_negative, adm_scaler_end, refiner_swap_method, adaptive_cfg, clip_skip,
                              base_model, refiner_model, refiner_switch, sampler_name, scheduler_name, vae_name,
                              seed_random, image_seed, inpaint_engine, inpaint_engine_state,
@@ -973,7 +1349,7 @@ with shared.gradio_root:
                 .then(lambda: None, _js='()=>{refresh_style_localization();}') \
                 .then(inpaint_engine_state_change, inputs=[inpaint_engine_state] + enhance_inpaint_mode_ctrls, outputs=enhance_inpaint_engine_ctrls, queue=False, show_progress=False)
 
-        performance_selection.change(lambda x: [gr.update(interactive=not flags.Performance.has_restricted_features(x))] * 13 +
+        performance_selection.change(lambda x: [gr.update(interactive=not flags.Performance.has_restricted_features(x))] * 15 +
                                                [gr.update(visible=not flags.Performance.has_restricted_features(x))] * 1 +
                                                [gr.update(value=flags.Performance.has_restricted_features(x))] * 1,
                                      inputs=performance_selection,
@@ -981,7 +1357,8 @@ with shared.gradio_root:
                                          guidance_scale, sharpness, adm_scaler_end, adm_scaler_positive,
                                          adm_scaler_negative, refiner_switch, refiner_model, sampler_name,
                                          scheduler_name, adaptive_cfg, refiner_swap_method, guidance_mode,
-                                         deep_cache_profile, negative_prompt, disable_intermediate_results
+                                         pag_scale, deep_cache_profile, tomesd_profile,
+                                         negative_prompt, disable_intermediate_results
                                      ], queue=False, show_progress=False)
 
         output_format.input(lambda x: gr.update(output_format=x), inputs=output_format)
@@ -1015,10 +1392,15 @@ with shared.gradio_root:
         ctrls += [
             prompt, negative_prompt, translate_prompts, style_selections,
             performance_selection, aspect_ratios_selection, image_number, output_format, image_seed,
-            read_wildcards_in_order, sharpness, guidance_scale, guidance_mode, deep_cache_profile
+            read_wildcards_in_order, sharpness, guidance_scale, guidance_mode, pag_scale,
+            deep_cache_profile, tomesd_profile
         ]
 
-        ctrls += [base_model, refiner_model, refiner_switch] + lora_ctrls
+        ctrls += [
+            base_model, refiner_model, refiner_switch,
+            api_provider, api_model, fal_api_key, replicate_api_key,
+            api_refine_strength, api_enhance_prompt, api_creativity, api_do_not_store
+        ] + lora_ctrls
         ctrls += [input_image_checkbox, current_tab]
         ctrls += [uov_method, uov_input_image]
         ctrls += [outpaint_selections, inpaint_input_image, inpaint_additional_prompt, inpaint_mask_image]

@@ -57,6 +57,9 @@ args_parser.parser.add_argument("--torch-compile-max-profiles", type=int, defaul
 args_parser.parser.add_argument("--unet-cache", choices=['off', 'conservative', 'balanced', 'aggressive'],
                                 default='off',
                                 help="Default DeepCache profile. Reuses internal SDXL features between denoising steps.")
+args_parser.parser.add_argument("--tomesd", choices=['off', 'conservative', 'balanced', 'aggressive'],
+                                default='off',
+                                help="Default ToMeSD token-merging profile.")
 
 args_parser.parser.add_argument("--performance-log", type=str, nargs='?', const='performance.jsonl', default=None,
                                 help="Write generation timing, peak VRAM and output hashes to a JSONL file.")
@@ -64,7 +67,8 @@ args_parser.parser.add_argument("--performance-run-label", type=str, default='de
                                 help="Label stored in performance benchmark records.")
 
 args_parser.parser.add_argument("--tiled-upscale-batch-size", type=int, default=0,
-                                help="Tiles processed together by Tiled SDXL Detail Upscale. 0 selects automatically.")
+                                help="Tiles processed together by Tiled SDXL Detail Upscale 2.0. "
+                                     "0 selects automatically.")
 
 args_parser.parser.add_argument("--disable-latent-cache", action='store_true',
                                 help="Disable the in-memory VAE latent cache.")

@@ -3,59 +3,28 @@
 I consider Fooocus to be one of the most beautiful and elegant text-to-image tools, and I still regard SDXL as a relevant model family because it is fast and continues to be maintained by a vibrant community. I have therefore decided to continue maintaining Fooocus mashb1t's 1-Up Edition and keeping it alive, as far as I am able. Above all, so that others can build on it.
 
 I'm cheekily calling it simply Fooocus Advanced.
-## What's New in Fooocus Advanced 0.9.1 Experimental
 
-Fooocus Advanced builds on Fooocus 2.6.5 and mashb1t's 1-Up Edition while preserving the familiar, focused Fooocus workflow. This experimental release adds new quality modes, performance optimizations, improved upscaling, modern masking tools, external API models, and more portable model handling.
+**Current experimental release: Fooocus Advanced 0.9.1**
 
-### Image Quality and Upscaling
+### New features
 
-- **Tiled SDXL Detail Upscale 2.0** reconstructs additional details through diffusion-based tiled processing. It includes balanced tile planning, automatic batching, seam-aware blending, low-frequency color anchoring, reflection padding, stable regional seeds, and automatic VRAM fallback.
-- **Quality 10 (AYS)** provides a fast 10-step SDXL quality mode using a tuned Align Your Steps schedule with DPM++ 2M SDE.
-- **Modern guidance modes** add APG, CFG++, and PAG alongside standard classifier-free guidance. These modes can reduce oversaturation, improve detail, and strengthen image structure without requiring additional models.
-- **Optional SAM 3 integration** improves object detection, mask generation, and Enhance workflows. If the local SAM 3 worker is unavailable, Fooocus automatically falls back to GroundingDINO and classic SAM.
+- **Tiled SDXL Detail Upscale 2.0** for high-resolution diffusion-based detail reconstruction with balanced tile planning, seam-aware blending, low-frequency color anchoring, stable regional seeds, and automatic batching.
+- **Quality 10 (AYS)** for fast, model-free SDXL generation using a tuned 10-step Align Your Steps schedule with DPM++ 2M SDE.
+- **Optional SAM 3 integration** for more accurate object detection, masks, and Enhance workflows.
+- **Modern APG, CFG++, and PAG guidance** for reducing oversaturation and improving sample quality. CFG++ includes sampler-correct renoising for the Euler and DPM++ 2M families, while PAG adds structure and detail without requiring another model.
+- **DeepCache feature reuse** for faster SDXL diffusion with configurable `conservative`, `balanced`, and `aggressive` quality/performance profiles.
+- **Optional deterministic ToMeSD acceleration** with configurable token-merging profiles for reducing UNet attention work.
+- **Smarter VRAM management** with adaptive policies for low-, medium-, and high-VRAM systems.
+- **VAE latent and CLIP condition caches** to avoid repeated encoding and reduce generation times.
+- **Automatic attention backend selection** with runtime benchmarking of PyTorch SDPA and xFormers.
+- **Optional `torch.compile` profiles** optimized for frequently used image resolutions.
+- **Performance logging and comparison tools** for generation time, peak VRAM usage, and output consistency.
+- **Improved model handling** with portable paths, nested-folder detection, reuse of existing checkpoints, and an option to disable all automatic model downloads.
+- **Optional external image models via fal.ai or Replicate**, including Krea 2, FLUX.1 Krea, FLUX.2 Klein, Nano Banana Pro, Nano Banana 2, MiniMax Image-01, and Dreamina 3.1. API results can be sent directly through a local low-denoise SDXL refinement pass.
 
-### Performance Improvements
+### Windows installation
 
-- **DeepCache feature reuse** reduces repeated UNet work through configurable `conservative`, `balanced`, and `aggressive` profiles.
-- **Deterministic ToMeSD acceleration** reduces self-attention workload by merging similar tokens, with multiple quality and performance profiles.
-- **Smarter VRAM management** automatically adapts to low-, medium-, and high-VRAM systems and can downgrade its policy when memory pressure is detected.
-- **VAE latent and CLIP condition caches** avoid repeated encoding work across compatible generations.
-- **Automatic attention backend selection** benchmarks available PyTorch SDPA and xFormers implementations and selects the most suitable backend.
-- **Optional `torch.compile` profiles** cache optimized UNet graphs for frequently used image resolutions.
-- **Performance logging and comparison tools** record generation time, individual processing stages, peak VRAM usage, workload signatures, image hashes, MAE, and PSNR.
-
-### External API Models
-
-- Generate images through **fal.ai** or **Replicate** by selecting **Other via API** as the base model.
-- Supported models include **Krea 2**, **FLUX.1 Krea**, **FLUX.2 Klein**, **Nano Banana Pro**, **Nano Banana 2**, **MiniMax Image-01**, and **Dreamina 3.1**, depending on provider availability.
-- API images can be generated and saved directly without requiring a local Refiner.
-- A full local SDXL checkpoint can optionally perform a low-denoise refinement pass on the returned API image.
-- API generations are saved through the normal Fooocus output pipeline and included in the daily HTML log with prompt, styles, seed, provider, model, and refinement information.
-- API keys can remain temporary or be stored locally in `Fooocus/.env` using **Save key**. **Delete saved key** removes the selected provider's stored credential.
-- Stored credentials are never returned to the browser or written to generation logs. The `.env` file is excluded from Git and receives restrictive permissions where supported.
-
-### Interface Improvements
-
-- Small, unobtrusive information buttons explain Guidance, DeepCache, ToMeSD, mask-generation models, and the classic SAM `vit_b`, `vit_l`, and `vit_h` variants.
-- Information is displayed in responsive floating popovers instead of expanding or shifting the interface.
-- Popovers can be closed using the close button, by clicking outside, or by pressing `Esc`.
-- SAM 3 is clearly marked as the recommended latest enhancement model.
-
-### Model Handling and Portability
-
-- Existing checkpoints are detected and reused instead of downloaded again.
-- Checkpoints inside nested model folders are recognized.
-- Model paths remain portable when the installation directory is moved.
-- Automatic model downloads can be disabled completely through `run_no_download.bat`, `--disable-model-download`, or `config.txt`.
-- Missing models produce clear errors instead of silently accessing the network.
-
-### Windows Distribution
-
-The Windows release is distributed as two separate packages:
-
-- **Fooocus Advanced**, containing the application and BAT launchers.
-- **Python Embedded**, containing the isolated Python environment and required runtime dependencies.
-
+To install Fooocus Advanced, download two packages: **Fooocus Advanced** itself and **Python Embedded**, which contains the Python environment required to run Fooocus Advanced.
 
 Extract both packages into the same directory. The `python_embeded` folder from the Python Embedded package must be placed next to the BAT files and the `Fooocus` folder, not inside the `Fooocus` folder. The final folder structure should look like this:
 
@@ -78,8 +47,13 @@ Keep the folder names exactly as shown. The spelling `python_embeded` is intenti
 
 Start Fooocus Advanced with `run.bat`. On its first launch, Fooocus checks the bundled Python environment, installs missing dependencies, and may download the default model. Use `run_no_download.bat` to prevent all automatic model downloads; in that mode, place an SDXL checkpoint in `Fooocus/models/checkpoints` before starting.
 
-## Download [Fooocus Advanced v0.2.5](https://github.com/micha42-dot/Fooocus_Advanced/releases/tag/v0.2.5)
+### External API models
 
+Choose **Other via API** as the base model, select a provider and model, and enter the corresponding key in the **API** tab. A key can be used for only the current request or stored locally with **Save key**. Saved keys are written to `Fooocus/.env`, which is excluded from Git, and can be removed again with **Delete saved key**. The password field is cleared after saving and stored keys are never sent back to the browser. System environment variables `FAL_KEY` and `REPLICATE_API_TOKEN` remain supported and take precedence over the local `.env` file.
+
+The `.env` file is plain text and should be treated like a password file. Fooocus applies restrictive file permissions where supported, but the file must not be shared or included in release archives.
+
+To refine an API-generated image locally, select a **full SDXL checkpoint** in the Refiner menu and adjust **Local SDXL Refine Strength**. Fooocus encodes the returned image with the local VAE and performs a low-denoise SDXL image pass; SDXL Refiner-only and SD 1.5 checkpoints are not supported for this API post-processing path.
 
 ---
 
@@ -139,8 +113,9 @@ This fork includes an opt-in performance toolkit for repeatable SDXL measurement
 * PyTorch SDPA and xFormers are benchmarked and numerically validated before the faster backend is selected.
 * CLIP conditions are kept in a bounded LRU cache across repeated jobs. Use `--clip-cache-size MB` to change its size or `--disable-clip-cache` to disable it.
 * `--torch-compile` supports `--torch-compile-profile resolution` for optimized graphs per latent resolution, or `dynamic` for one flexible graph. The persistent TorchInductor cache is stored below `cache/torchinductor`.
-* The Advanced tab offers [APG](https://arxiv.org/abs/2410.02416) to reduce oversaturation at stronger guidance and sampler-correct [CFG++](https://cfgpp-diffusion.github.io/) for the Euler and DPM++ 2M families. CFG++ maps Fooocus' familiar guidance range to its native low-scale range automatically.
+* The Advanced tab offers [APG](https://arxiv.org/abs/2410.02416) to reduce oversaturation at stronger guidance, sampler-correct [CFG++](https://cfgpp-diffusion.github.io/) for the Euler and DPM++ 2M families, and [PAG](https://arxiv.org/abs/2403.17377) for additional structure and detail without a separate model. PAG scale is configurable and also works at CFG 1.
 * DeepCache profiles reuse internal high-level SDXL features while the image-facing UNet blocks continue to run. `conservative`, `balanced`, and `aggressive` trade increasing speed for increasing approximation; `--unet-cache PROFILE` sets the startup default. Short runs, ControlNet, patched transformer runs, and `torch.compile` bypass DeepCache automatically.
+* [ToMeSD](https://arxiv.org/abs/2303.17604) reduces self-attention work by merging similar tokens. The deterministic `conservative`, `balanced`, and `aggressive` profiles can be selected in the Advanced tab or with `--tomesd PROFILE`; Fooocus disables ToMeSD automatically when PAG, DeepCache, or `torch.compile` owns an incompatible execution path.
 * `--performance-log [FILE] --performance-run-label LABEL` writes timings, peak VRAM, the complete workload signature and image hashes as JSONL.
 
 Fresh launcher and Docker environments use PyTorch 2.10, CUDA 12.8 wheels and xFormers 0.0.35. Existing environments are not upgraded automatically; update them explicitly with:
@@ -156,6 +131,12 @@ python tools/performance_report.py outputs/performance.jsonl --baseline baseline
 ```
 
 The report shows median runtime, peak VRAM, speedup and, while the generated files still exist, pixel MAE and PSNR between matching outputs.
+
+### Tiled SDXL Detail Upscale 2.0
+
+The 2.0 upscaler distributes SDXL tiles evenly across the complete image instead of leaving an oversized final overlap. Actual neighboring regions determine complementary raised-cosine blend masks, with stronger confidence toward each tile center to suppress doubled details.
+
+Before compositing, each generated tile is anchored to the source image's low-frequency color and illumination while retaining its diffusion-generated high-frequency texture. Reflection padding avoids repeated border pixels, and coordinate-derived seeds keep every region reproducible even if automatic VRAM fallback changes the batch size.
 
 ### Enhance - Automatic Image Upscaling + Enhancement
 
