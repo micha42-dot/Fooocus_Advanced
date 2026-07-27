@@ -3,7 +3,15 @@ import unittest
 import torch
 
 from ldm_patched.k_diffusion import sampling
-from modules.guidance import adaptive_projected_guidance, cfgpp_scale, supports_cfgpp_sampler
+from modules.guidance import (
+    PAG_APPLIED_LAYER,
+    adaptive_projected_guidance,
+    cfgpp_scale,
+    make_pag_model_options,
+    pag_identity_attention,
+    perturbed_attention_guidance,
+    supports_cfgpp_sampler,
+)
 
 
 class TestGuidance(unittest.TestCase):
@@ -21,6 +29,39 @@ class TestGuidance(unittest.TestCase):
         self.assertEqual(cfgpp_scale(30.0), 1.0)
         self.assertTrue(supports_cfgpp_sampler('dpmpp_2m_sde_gpu'))
         self.assertFalse(supports_cfgpp_sampler('heun'))
+
+    def test_pag_adds_conditional_perturbation_direction(self):
+        base = torch.tensor([4.0])
+        cond = torch.tensor([3.0])
+        perturbed = torch.tensor([5.0])
+
+        result = perturbed_attention_guidance(base, cond, perturbed, scale=2.5)
+
+        self.assertTrue(torch.equal(result, torch.tensor([-1.0])))
+
+    def test_pag_model_options_do_not_mutate_original_options(self):
+        existing = lambda q, k, v, options: q
+        original = {
+            'transformer_options': {
+                'patches_replace': {
+                    'attn2': {('input', 1, 0): existing},
+                },
+            },
+        }
+
+        pag_options = make_pag_model_options(original)
+
+        self.assertNotIn('attn1', original['transformer_options']['patches_replace'])
+        replacements = pag_options['transformer_options']['patches_replace']
+        self.assertIs(replacements['attn2'][('input', 1, 0)], existing)
+        self.assertIs(replacements['attn1'][PAG_APPLIED_LAYER], pag_identity_attention)
+
+    def test_pag_identity_attention_returns_projected_values(self):
+        q = torch.tensor([[[1.0, 2.0]]])
+        k = torch.tensor([[[3.0, 4.0]]])
+        v = torch.tensor([[[5.0, 6.0]]])
+
+        self.assertIs(pag_identity_attention(q, k, v), v)
 
     def test_euler_cfgpp_renoises_with_unconditional_prediction(self):
         original = sampling.cfgpp_get_uncond_denoised

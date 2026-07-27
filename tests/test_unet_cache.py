@@ -7,7 +7,7 @@ from modules.unet_cache import DeepCache
 
 class TestDeepCache(unittest.TestCase):
     @staticmethod
-    def begin(cache, timestep, control=None, patches=None, slots=None):
+    def begin(cache, timestep, control=None, patches=None, patches_replace=None, slots=None):
         return cache.begin(
             x=torch.ones((2, 4, 128, 128)),
             timesteps=torch.tensor([timestep]),
@@ -19,6 +19,7 @@ class TestDeepCache(unittest.TestCase):
                 'fooocus_conditioning_slots': slots or [(0, 0), (1, 0)],
                 'fooocus_full_shape': [1, 4, 128, 128],
                 'patches': patches or {},
+                'patches_replace': patches_replace or {},
             },
             input_blocks=9,
             output_blocks=9,
@@ -66,7 +67,8 @@ class TestDeepCache(unittest.TestCase):
 
         self.assertIsNone(self.begin(cache, 700.0, control=object()))
         self.assertIsNone(self.begin(cache, 650.0, patches={'output_block_patch': [object()]}))
-        self.assertEqual(cache.stats()['bypasses'], 2)
+        self.assertIsNone(self.begin(cache, 600.0, patches_replace={'attn1': {('middle', 0, 0): object()}}))
+        self.assertEqual(cache.stats()['bypasses'], 3)
 
     def test_short_and_compiled_runs_stay_disabled(self):
         cache = DeepCache()
