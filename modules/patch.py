@@ -23,10 +23,13 @@ import modules.constants as constants
 from modules.guidance import (
     GUIDANCE_APG,
     GUIDANCE_CFGPP,
+    GUIDANCE_PAG,
     GUIDANCE_STANDARD,
     adaptive_projected_guidance,
     cfgpp_scale,
+    make_pag_model_options,
     normalize_guidance_mode,
+    perturbed_attention_guidance,
 )
 
 from ldm_patched.modules.samplers import calc_cond_uncond_batch
@@ -44,7 +47,8 @@ class PatchSettings:
                  negative_adm_scale=0.8,
                  controlnet_softness=0.25,
                  adaptive_cfg=7.0,
-                 guidance_mode=GUIDANCE_STANDARD):
+                 guidance_mode=GUIDANCE_STANDARD,
+                 pag_scale=3.0):
         self.sharpness = sharpness
         self.adm_scaler_end = adm_scaler_end
         self.positive_adm_scale = positive_adm_scale
@@ -52,6 +56,7 @@ class PatchSettings:
         self.controlnet_softness = controlnet_softness
         self.adaptive_cfg = adaptive_cfg
         self.guidance_mode = normalize_guidance_mode(guidance_mode)
+        self.pag_scale = max(0.0, float(pag_scale))
         self.global_diffusion_progress = 0
         self.eps_record = None
         self.apg_running_average = None
@@ -267,18 +272,23 @@ def compute_cfg(uncond, cond, cfg_scale, t):
 
 def patched_sampling_function(model, x, timestep, uncond, cond, cond_scale, model_options=None, seed=None):
     pid = os.getpid()
+    settings = patch_settings[pid]
+    model_options = model_options or {}
 
-    if math.isclose(cond_scale, 1.0) and not model_options.get("disable_cfg1_optimization", False):
+    if (math.isclose(cond_scale, 1.0)
+            and settings.guidance_mode != GUIDANCE_PAG
+            and not model_options.get("disable_cfg1_optimization", False)):
         final_x0 = calc_cond_uncond_batch(model, cond, None, x, timestep, model_options)[0]
 
-        if patch_settings[pid].eps_record is not None:
-            patch_settings[pid].eps_record = ((x - final_x0) / timestep).cpu()
+        if settings.eps_record is not None:
+            settings.eps_record = ((x - final_x0) / timestep).cpu()
 
         return final_x0
 
-    positive_x0, negative_x0 = calc_cond_uncond_batch(model, cond, uncond, x, timestep, model_options)
+    uncond_for_batch = None if math.isclose(cond_scale, 1.0) else uncond
+    positive_x0, negative_x0 = calc_cond_uncond_batch(
+        model, cond, uncond_for_batch, x, timestep, model_options)
 
-    settings = patch_settings[pid]
     settings.cfgpp_uncond_denoised = negative_x0 if settings.guidance_mode == GUIDANCE_CFGPP else None
 
     positive_eps = x - positive_x0
@@ -292,8 +302,20 @@ def patched_sampling_function(model, x, timestep, uncond, cond, cond_scale, mode
     final_eps = compute_cfg(uncond=negative_eps, cond=positive_eps_degraded_weighted,
                             cfg_scale=cond_scale, t=patch_settings[pid].global_diffusion_progress)
 
-    if patch_settings[pid].eps_record is not None:
-        patch_settings[pid].eps_record = (final_eps / timestep).cpu()
+    if settings.guidance_mode == GUIDANCE_PAG and settings.pag_scale > 0.0:
+        pag_model_options = make_pag_model_options(model_options)
+        perturbed_x0 = calc_cond_uncond_batch(
+            model, cond, None, x, timestep, pag_model_options)[0]
+        perturbed_eps = x - perturbed_x0
+        final_eps = perturbed_attention_guidance(
+            base=final_eps,
+            cond=positive_eps,
+            perturbed=perturbed_eps,
+            scale=settings.pag_scale,
+        )
+
+    if settings.eps_record is not None:
+        settings.eps_record = (final_eps / timestep).cpu()
 
     return x - final_eps
 

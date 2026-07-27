@@ -37,7 +37,9 @@ def load_parameter_button_click(raw_metadata: dict | str, is_generating: bool, i
     get_number('guidance_scale', 'Guidance Scale', loaded_parameter_dict, results)
     get_number('sharpness', 'Sharpness', loaded_parameter_dict, results)
     get_str('guidance_mode', 'Guidance', loaded_parameter_dict, results)
+    get_number('pag_scale', 'PAG Scale', loaded_parameter_dict, results)
     get_str('deep_cache_profile', 'DeepCache', loaded_parameter_dict, results)
+    get_str('tomesd_profile', 'ToMeSD', loaded_parameter_dict, results)
     get_adm_guidance('adm_guidance', 'ADM Guidance', loaded_parameter_dict, results)
     get_str('refiner_swap_method', 'Refiner Swap Method', loaded_parameter_dict, results)
     get_number('adaptive_cfg', 'CFG Mimicking from TSNR', loaded_parameter_dict, results)
@@ -348,7 +350,10 @@ class A1111MetadataParser(MetadataParser):
         'resolution': 'Size',
         'sharpness': 'Sharpness',
         'guidance_mode': 'Guidance',
+        'pag_scale': 'PAG Scale',
         'deep_cache_profile': 'DeepCache',
+        'tomesd_profile': 'ToMeSD',
+        'tiled_detail_upscale': 'Tiled Detail Upscale',
         'adm_guidance': 'ADM Guidance',
         'refiner_swap_method': 'Refiner Swap Method',
         'adaptive_cfg': 'Adaptive CFG',
@@ -497,7 +502,9 @@ class A1111MetadataParser(MetadataParser):
                 self.fooocus_to_a1111['refiner_model_hash']: self.refiner_model_hash
             }
 
-        for key in ['guidance_mode', 'deep_cache_profile', 'adaptive_cfg', 'clip_skip', 'overwrite_switch', 'refiner_swap_method', 'freeu']:
+        for key in ['guidance_mode', 'pag_scale', 'deep_cache_profile', 'tomesd_profile',
+                    'tiled_detail_upscale', 'adaptive_cfg', 'clip_skip', 'overwrite_switch',
+                    'refiner_swap_method', 'freeu']:
             if key in data:
                 generation_params[self.fooocus_to_a1111[key]] = data[key]
 
@@ -647,7 +654,7 @@ def get_exif(metadata: str | None, metadata_scheme: str):
     # 0x9286 = UserComment
     exif[0x9286] = metadata
     # 0x0131 = Software
-    exif[0x0131] = 'Fooocus v' + fooocus_version.version
+    exif[0x0131] = fooocus_version.full_version
     # 0x927C = MakerNote
     exif[0x927C] = metadata_scheme
     return exif

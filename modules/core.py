@@ -14,6 +14,7 @@ import modules.performance
 import modules.performance_metrics
 from modules.unet_cache import reset_unet_cache
 from modules.latent_cache import get_latent_cache
+from modules.tomesd import apply_tomesd_profile
 import ldm_patched.modules.samplers
 import ldm_patched.modules.latent_formats
 
@@ -131,6 +132,12 @@ class StableDiffusionModel:
 @torch.inference_mode()
 def apply_freeu(model, b1, b2, s1, s2):
     return opFreeU.patch(model=model, b1=b1, b2=b2, s1=s1, s2=s2)[0]
+
+
+@torch.no_grad()
+@torch.inference_mode()
+def apply_tomesd(model, profile_name):
+    return apply_tomesd_profile(model, profile_name)
 
 
 @torch.no_grad()

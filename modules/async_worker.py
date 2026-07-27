@@ -4,6 +4,7 @@ from extras.inpaint_mask import generate_mask_from_image, SAMOptions
 from modules.patch import PatchSettings, patch_settings, patch_all
 from modules.guidance import (
     GUIDANCE_CFGPP,
+    GUIDANCE_PAG,
     GUIDANCE_STANDARD,
     normalize_guidance_mode,
     supports_cfgpp_sampler,
@@ -15,7 +16,13 @@ patch_all()
 
 class AsyncTask:
     def __init__(self, args):
-        from modules.flags import Performance, MetadataScheme, ip_list, disabled
+        from modules.flags import (
+            Performance,
+            MetadataScheme,
+            disabled,
+            ip_list,
+            normalize_inpaint_mask_model,
+        )
         from modules.util import get_enabled_loras
         from modules.config import default_max_lora_number
         import args_manager
@@ -51,10 +58,20 @@ class AsyncTask:
         self.sharpness = args.pop()
         self.cfg_scale = args.pop()
         self.guidance_mode = args.pop()
+        self.pag_scale = args.pop()
         self.deep_cache_profile = args.pop()
+        self.tomesd_profile = args.pop()
         self.base_model_name = args.pop()
         self.refiner_model_name = args.pop()
         self.refiner_switch = args.pop()
+        self.api_provider = args.pop()
+        self.api_model = args.pop()
+        self.fal_api_key = args.pop()
+        self.replicate_api_key = args.pop()
+        self.api_refine_strength = float(args.pop())
+        self.api_enhance_prompt = args.pop()
+        self.api_creativity = args.pop()
+        self.api_do_not_store = args.pop()
         self.loras = get_enabled_loras([(bool(args.pop()), str(args.pop()), float(args.pop())) for _ in
                                         range(default_max_lora_number)])
         self.input_image_checkbox = args.pop()
@@ -77,6 +94,12 @@ class AsyncTask:
         self.clip_skip = args.pop()
         self.sampler_name = args.pop()
         self.scheduler_name = args.pop()
+        performance_sampler_name = self.performance_selection.sampler_name()
+        performance_scheduler_name = self.performance_selection.scheduler_name()
+        if performance_sampler_name is not None:
+            self.sampler_name = performance_sampler_name
+        if performance_scheduler_name is not None:
+            self.scheduler_name = performance_scheduler_name
         self.vae_name = args.pop()
         self.overwrite_step = args.pop()
         self.overwrite_switch = args.pop()
@@ -134,7 +157,7 @@ class AsyncTask:
             enhance_mask_dino_prompt_text = args.pop()
             enhance_prompt = args.pop()
             enhance_negative_prompt = args.pop()
-            enhance_mask_model = args.pop()
+            enhance_mask_model = normalize_inpaint_mask_model(args.pop())
             enhance_mask_cloth_category = args.pop()
             enhance_mask_sam_model = args.pop()
             enhance_mask_text_threshold = args.pop()
@@ -167,6 +190,8 @@ class AsyncTask:
         self.should_enhance = self.enhance_checkbox and (self.enhance_uov_method != disabled.casefold() or len(self.enhance_ctrls) > 0)
         self.images_to_enhance_count = 0
         self.enhance_stats = {}
+        # Keep only the non-empty marker used by webui.generate_clicked, not the copied API keys.
+        self.args = [True]
 
 async_tasks = []
 
@@ -201,6 +226,7 @@ def worker():
     import fooocus_version
     import args_manager
     import modules.performance_metrics as performance_metrics
+    import modules.external_api as external_api
 
     from extras.censor import default_censor
     from modules.sdxl_styles import apply_style, get_random_style, fooocus_expansion, apply_arrays, random_style_name
@@ -209,10 +235,23 @@ def worker():
     from modules.util import (remove_empty_str, HWC3, resize_image, get_image_shape_ceil, set_image_shape_ceil,
                               get_shape_ceil, resample_image, erode_or_dilate, parse_lora_references_from_prompt,
                               apply_wildcards)
-    from modules.tiled_upscale import (DEFAULT_TILE_OVERLAP, DEFAULT_TILE_SIZE, TILED_DETAIL_LATENT_KEY,
-                                       estimate_tiled_detail_tile_count, get_tile_positions,
-                                       get_tiled_detail_batch_size, get_tiled_detail_tile_count,
-                                       get_upscale_factor, is_tiled_detail_upscale, make_blend_mask)
+    from modules.tiled_upscale import (
+        BLEND_CONFIDENCE_POWER,
+        DEFAULT_TILE_OVERLAP,
+        DEFAULT_TILE_SIZE,
+        TILED_DETAIL_LATENT_KEY,
+        TILED_DETAIL_VERSION,
+        anchor_tile_low_frequency,
+        estimate_tiled_detail_tile_count,
+        get_padded_tile,
+        get_tile_positions,
+        get_tile_seed,
+        get_tiled_detail_batch_size,
+        get_tiled_detail_tile_count,
+        get_upscale_factor,
+        is_tiled_detail_upscale,
+        make_blend_mask,
+    )
     from modules.upscaler import perform_upscale
     from modules.flags import Performance
     from modules.meta_parser import get_metadata_parser
@@ -303,20 +342,6 @@ def worker():
             return steps * get_tiled_detail_tile_count(height, width)
         return steps
 
-    def get_padded_detail_tile(image, y, x, tile_size):
-        image_height, image_width = image.shape[:2]
-        tile_height = min(tile_size, image_height - y)
-        tile_width = min(tile_size, image_width - x)
-        tile = image[y:y + tile_height, x:x + tile_width]
-
-        if tile_height == tile_size and tile_width == tile_size:
-            return np.ascontiguousarray(tile.copy()), tile_height, tile_width
-
-        pad_height = tile_size - tile_height
-        pad_width = tile_size - tile_width
-        padded = np.pad(tile, [[0, pad_height], [0, pad_width], [0, 0]], mode='edge')
-        return np.ascontiguousarray(padded.copy()), tile_height, tile_width
-
     def process_tiled_detail_upscale(all_steps, async_task, base_progress, current_task_id, denoising_strength,
                                      final_scheduler_name, initial_latent, steps, switch, positive_cond,
                                      negative_cond, task, preparation_steps, total_count):
@@ -332,8 +357,9 @@ def worker():
             total_tiles=total_tiles
         )
 
-        print(f'[Tiled Detail Upscale] Processing {total_tiles} tiles at {DEFAULT_TILE_SIZE}px '
+        print(f'[Tiled Detail Upscale {TILED_DETAIL_VERSION}] Processing {total_tiles} tiles at {DEFAULT_TILE_SIZE}px '
               f'with {DEFAULT_TILE_OVERLAP}px overlap. Batch size: {tile_batch_size}.')
+        performance_metrics.record_counter('tiled_detail_tiles', total_tiles)
 
         accumulator = np.zeros((image_height, image_width, 3), dtype=np.float32)
         weights = np.zeros((image_height, image_width, 1), dtype=np.float32)
@@ -360,14 +386,14 @@ def worker():
             tiles = []
             tile_dimensions = []
             for y, x in current_batch:
-                tile, tile_height, tile_width = get_padded_detail_tile(image, y, x, DEFAULT_TILE_SIZE)
+                tile, tile_height, tile_width = get_padded_tile(image, y, x, DEFAULT_TILE_SIZE)
                 tiles.append(tile)
                 tile_dimensions.append((tile_height, tile_width))
 
             initial_pixels = torch.from_numpy(np.stack(tiles)).float().div_(255.0)
             tile_seeds = [
-                (task['task_seed'] + index + 1) % (constants.MAX_SEED + 1)
-                for index in range(tile_index, batch_end)
+                get_tile_seed(task['task_seed'], y, x, constants.MAX_SEED)
+                for y, x in current_batch
             ]
 
             def tile_callback(step, x0, latent_x, total_steps, preview):
@@ -409,10 +435,12 @@ def worker():
                         ldm_patched.modules.model_management.unload_all_models()
                         ldm_patched.modules.model_management.soft_empty_cache(force=True)
                         print('[Tiled Detail Upscale] Retrying after VRAM policy downgrade.')
+                        performance_metrics.record_counter('tiled_detail_vram_retries')
                         continue
                     raise
                 tile_batch_size = max(1, tile_batch_size // 2)
                 print(f'[Tiled Detail Upscale] VRAM limit reached. Retrying with batch size {tile_batch_size}.')
+                performance_metrics.record_counter('tiled_detail_vram_retries')
                 del initial_pixels, tiles
                 if tile_latent is not None:
                     del tile_latent
@@ -422,9 +450,10 @@ def worker():
             if len(tile_results) != len(current_batch):
                 raise RuntimeError('Tiled detail upscale returned an unexpected image batch size.')
 
-            for (y, x), (tile_height, tile_width), tile_result in zip(
-                    current_batch, tile_dimensions, tile_results):
-                tile_result = tile_result[:tile_height, :tile_width].astype(np.float32)
+            for (y, x), (tile_height, tile_width), tile_result, reference_tile in zip(
+                    current_batch, tile_dimensions, tile_results, tiles):
+                tile_result = anchor_tile_low_frequency(tile_result, reference_tile)
+                tile_result = tile_result[:tile_height, :tile_width]
                 blend_mask = make_blend_mask(
                     tile_height=tile_height,
                     tile_width=tile_width,
@@ -432,7 +461,10 @@ def worker():
                     x=x,
                     image_height=image_height,
                     image_width=image_width,
-                    overlap=DEFAULT_TILE_OVERLAP
+                    overlap=DEFAULT_TILE_OVERLAP,
+                    y_positions=y_positions,
+                    x_positions=x_positions,
+                    confidence_power=BLEND_CONFIDENCE_POWER,
                 )[:, :, None]
 
                 accumulator[y:y + tile_height, x:x + tile_width] += tile_result * blend_mask
@@ -508,13 +540,30 @@ def worker():
         async_task.guidance_mode = normalize_guidance_mode(async_task.guidance_mode)
         if async_task.deep_cache_profile not in flags.deep_cache_profiles:
             async_task.deep_cache_profile = 'off'
-        if async_task.cfg_scale <= 1.0 and async_task.guidance_mode != GUIDANCE_STANDARD:
+        if async_task.tomesd_profile not in flags.tomesd_profiles:
+            async_task.tomesd_profile = 'off'
+        if (async_task.cfg_scale <= 1.0
+                and async_task.guidance_mode not in (GUIDANCE_STANDARD, GUIDANCE_PAG)):
             print('[Guidance] Guidance variant disabled because CFG is 1.0.')
             async_task.guidance_mode = GUIDANCE_STANDARD
         elif (async_task.guidance_mode == GUIDANCE_CFGPP
               and not supports_cfgpp_sampler(async_task.sampler_name)):
             print(f'[Guidance] CFG++ does not support {async_task.sampler_name}; using Standard guidance.')
             async_task.guidance_mode = GUIDANCE_STANDARD
+
+        if getattr(args_manager.args, 'torch_compile', False):
+            if async_task.guidance_mode == GUIDANCE_PAG:
+                print('[Guidance] PAG is disabled while torch.compile is active.')
+                async_task.guidance_mode = GUIDANCE_STANDARD
+            if async_task.tomesd_profile != 'off':
+                print('[ToMeSD] Disabled while torch.compile is active.')
+                async_task.tomesd_profile = 'off'
+        if async_task.guidance_mode == GUIDANCE_PAG and async_task.tomesd_profile != 'off':
+            print('[ToMeSD] Disabled because PAG owns the self-attention patch path.')
+            async_task.tomesd_profile = 'off'
+        if async_task.tomesd_profile != 'off' and async_task.deep_cache_profile != 'off':
+            print('[DeepCache] Disabled because ToMeSD changes transformer token layouts.')
+            async_task.deep_cache_profile = 'off'
 
         patch_settings[pid] = PatchSettings(
             async_task.sharpness,
@@ -523,7 +572,8 @@ def worker():
             async_task.adm_scaler_negative,
             async_task.controlnet_softness,
             async_task.adaptive_cfg,
-            async_task.guidance_mode
+            async_task.guidance_mode,
+            async_task.pag_scale
         )
 
     def save_and_log(async_task, height, imgs, task, use_expansion, width, loras, persist_image=True) -> list:
@@ -547,6 +597,13 @@ def worker():
                  ('Refiner Model', 'refiner_model', async_task.refiner_model_name),
                  ('Refiner Switch', 'refiner_switch', async_task.refiner_switch)]
 
+            if async_task.base_model_name == external_api.API_BASE_MODEL:
+                d.extend(external_api.get_generation_metadata(
+                    async_task.api_provider,
+                    async_task.api_model,
+                    async_task.refiner_model_name,
+                    async_task.api_refine_strength))
+
             if async_task.refiner_model_name != 'None':
                 if async_task.overwrite_switch > 0:
                     d.append(('Overwrite Switch', 'overwrite_switch', async_task.overwrite_switch))
@@ -555,10 +612,17 @@ def worker():
             if modules.patch.patch_settings[pid].adaptive_cfg != modules.config.default_cfg_tsnr:
                 d.append(
                     ('CFG Mimicking from TSNR', 'adaptive_cfg', modules.patch.patch_settings[pid].adaptive_cfg))
-            if async_task.guidance_mode != modules.config.default_guidance_mode:
+            if async_task.guidance_mode != GUIDANCE_STANDARD:
                 d.append(('Guidance', 'guidance_mode', async_task.guidance_mode))
-            if async_task.deep_cache_profile != modules.config.default_deep_cache_profile:
+            if async_task.guidance_mode == GUIDANCE_PAG:
+                d.append(('PAG Scale', 'pag_scale', async_task.pag_scale))
+            if async_task.deep_cache_profile != 'off':
                 d.append(('DeepCache', 'deep_cache_profile', async_task.deep_cache_profile))
+            if async_task.tomesd_profile != 'off':
+                d.append(('ToMeSD', 'tomesd_profile', async_task.tomesd_profile))
+            if (is_tiled_detail_upscale(async_task.uov_method)
+                    or is_tiled_detail_upscale(async_task.enhance_uov_method)):
+                d.append(('Tiled Detail Upscale', 'tiled_detail_upscale', TILED_DETAIL_VERSION))
 
             if async_task.clip_skip > 1:
                 d.append(('CLIP Skip', 'clip_skip', async_task.clip_skip))
@@ -577,14 +641,23 @@ def worker():
 
             metadata_parser = None
             if async_task.save_metadata_to_images:
-                metadata_parser = modules.meta_parser.get_metadata_parser(async_task.metadata_scheme)
-                metadata_parser.set_data(task['log_positive_prompt'], task['positive'],
-                                         task['log_negative_prompt'], task['negative'],
-                                         async_task.steps, async_task.base_model_name, async_task.refiner_model_name,
-                                         loras, async_task.vae_name)
+                if (async_task.base_model_name != external_api.API_BASE_MODEL
+                        or async_task.refiner_model_name != 'None'):
+                    metadata_parser = modules.meta_parser.get_metadata_parser(async_task.metadata_scheme)
+                    metadata_base_model = async_task.refiner_model_name \
+                        if async_task.base_model_name == external_api.API_BASE_MODEL \
+                        else async_task.base_model_name
+                    metadata_refiner_model = 'None' \
+                        if async_task.base_model_name == external_api.API_BASE_MODEL \
+                        else async_task.refiner_model_name
+                    metadata_parser.set_data(
+                        task['log_positive_prompt'], task['positive'],
+                        task['log_negative_prompt'], task['negative'],
+                        async_task.steps, metadata_base_model, metadata_refiner_model,
+                        loras, async_task.vae_name)
             d.append(('Metadata Scheme', 'metadata_scheme',
-                      async_task.metadata_scheme.value if async_task.save_metadata_to_images else async_task.save_metadata_to_images))
-            d.append(('Version', 'version', 'Fooocus v' + fooocus_version.version))
+                      async_task.metadata_scheme.value if metadata_parser is not None else False))
+            d.append(('Version', 'version', fooocus_version.full_version))
             image_path = log(x, d, metadata_parser, async_task.output_format, task, persist_image)
             img_paths.append(image_path)
             performance_metrics.record_image(image_path, x)
@@ -806,7 +879,7 @@ def worker():
         if use_tiled_detail:
             height, width = uov_input_image.shape[:2]
             async_task.tiled_upscale_tile_count = get_tiled_detail_tile_count(height, width)
-            print(f'[Tiled Detail Upscale] Final resolution is {str((width, height))}. '
+            print(f'[Tiled Detail Upscale {TILED_DETAIL_VERSION}] Final resolution is {str((width, height))}. '
                   f'Tiles: {async_task.tiled_upscale_tile_count}.')
             return direct_return, uov_input_image, denoising_strength, {
                 TILED_DETAIL_LATENT_KEY: uov_input_image
@@ -843,8 +916,84 @@ def worker():
             height = async_task.overwrite_height
         return steps, switch, width, height
 
+    def prepare_external_api_tasks(async_task, prompt, negative_prompt, image_number, use_style):
+        prompts = remove_empty_str([safe_str(p) for p in prompt.splitlines()], default='')
+        negative_prompts = remove_empty_str(
+            [safe_str(p) for p in negative_prompt.splitlines()], default='')
+        prompt = prompts[0]
+        negative_prompt = negative_prompts[0]
+        extra_positive_prompts = prompts[1:] if len(prompts) > 1 else []
+        extra_negative_prompts = negative_prompts[1:] if len(negative_prompts) > 1 else []
+        _, prompt = parse_lora_references_from_prompt(
+            prompt, async_task.loras, modules.config.default_max_lora_number,
+            lora_filenames=modules.config.lora_filenames)
+        tasks = []
+
+        for i in range(image_number):
+            task_seed = async_task.seed % (constants.MAX_SEED + 1) if async_task.disable_seed_increment \
+                else (async_task.seed + i) % (constants.MAX_SEED + 1)
+            task_rng = random.Random(task_seed)
+            task_prompt = apply_arrays(
+                apply_wildcards(prompt, task_rng, i, async_task.read_wildcards_in_order), i)
+            task_negative_prompt = apply_wildcards(
+                negative_prompt, task_rng, i, async_task.read_wildcards_in_order)
+            positive = []
+            negative = []
+            task_styles = async_task.style_selections.copy()
+
+            if use_style:
+                placeholder_replaced = False
+                for j, style in enumerate(task_styles):
+                    if style == random_style_name:
+                        style = get_random_style(task_rng)
+                        task_styles[j] = style
+                    style_positive, style_negative, has_placeholder = apply_style(
+                        style, positive=task_prompt)
+                    placeholder_replaced = placeholder_replaced or has_placeholder
+                    positive += style_positive
+                    negative += style_negative
+                if not placeholder_replaced:
+                    positive.insert(0, task_prompt)
+            else:
+                positive.append(task_prompt)
+
+            task_extra_positive = [
+                apply_wildcards(value, task_rng, i, async_task.read_wildcards_in_order)
+                for value in extra_positive_prompts
+            ]
+            task_extra_negative = [
+                apply_wildcards(value, task_rng, i, async_task.read_wildcards_in_order)
+                for value in extra_negative_prompts
+            ]
+            positive = remove_empty_str(positive + task_extra_positive, default=task_prompt)
+            negative = remove_empty_str(
+                negative + [task_negative_prompt] + task_extra_negative,
+                default=task_negative_prompt)
+            tasks.append({
+                'task_seed': task_seed,
+                'task_prompt': task_prompt,
+                'task_negative_prompt': task_negative_prompt,
+                'positive': positive,
+                'negative': negative,
+                'api_prompt': '\n'.join(positive),
+                'expansion': '',
+                'c': None,
+                'uc': None,
+                'positive_top_k': len(positive),
+                'negative_top_k': len(negative),
+                'log_positive_prompt': '\n'.join([task_prompt] + task_extra_positive),
+                'log_negative_prompt': '\n'.join(
+                    [task_negative_prompt] + task_extra_negative),
+                'styles': task_styles,
+            })
+        return tasks
+
     def process_prompt(async_task, prompt, negative_prompt, base_model_additional_loras, image_number, disable_seed_increment, use_expansion, use_style,
-                       use_synthetic_refiner, current_progress, advance_progress=False):
+                       use_synthetic_refiner, current_progress, advance_progress=False,
+                       base_model_name=None, refiner_model_name=None):
+        if async_task.base_model_name == external_api.API_BASE_MODEL and base_model_name is None:
+            base_model_name = async_task.refiner_model_name
+            refiner_model_name = 'None'
         prompts = remove_empty_str([safe_str(p) for p in prompt.splitlines()], default='')
         negative_prompts = remove_empty_str([safe_str(p) for p in negative_prompt.splitlines()], default='')
         prompt = prompts[0]
@@ -863,8 +1012,8 @@ def worker():
                                                           modules.config.default_max_lora_number,
                                                           lora_filenames=lora_filenames)
         loras += async_task.performance_loras
-        pipeline.refresh_everything(refiner_model_name=async_task.refiner_model_name,
-                                    base_model_name=async_task.base_model_name,
+        pipeline.refresh_everything(refiner_model_name=refiner_model_name or async_task.refiner_model_name,
+                                    base_model_name=base_model_name or async_task.base_model_name,
                                     loras=loras, base_model_additional_loras=base_model_additional_loras,
                                     use_synthetic_refiner=use_synthetic_refiner, vae_name=async_task.vae_name)
         pipeline.set_clip_skip(async_task.clip_skip)
@@ -968,6 +1117,15 @@ def worker():
             async_task.freeu_s1,
             async_task.freeu_s2
         )
+
+    def apply_tomesd(async_task):
+        if async_task.tomesd_profile == 'off':
+            return
+        print(f'[ToMeSD] Applying {async_task.tomesd_profile} token-merging profile.')
+        pipeline.final_unet = core.apply_tomesd(pipeline.final_unet, async_task.tomesd_profile)
+        if pipeline.final_refiner_unet is not None:
+            pipeline.final_refiner_unet = core.apply_tomesd(
+                pipeline.final_refiner_unet, async_task.tomesd_profile)
 
     def patch_discrete(unet, scheduler_name):
         return core.opModelSamplingDiscrete.patch(unet, scheduler_name, False)[0]
@@ -1221,6 +1379,7 @@ def worker():
         #     apply_control_nets(async_task, height, ip_adapter_face_path, ip_adapter_path, width)
         if async_task.freeu_enabled:
             apply_freeu(async_task)
+        apply_tomesd(async_task)
         patch_samplers(async_task)
         if 'inpaint' in goals:
             denoising_strength, initial_latent, width, height, current_progress = apply_inpaint(
@@ -1279,6 +1438,36 @@ def worker():
                 done_steps_upscaling += steps * step_multiplier
         return current_task_id, done_steps_inpainting, done_steps_upscaling, img, exception_result
 
+    def generate_external_source_images(async_task, api_tasks, api_key, width, height,
+                                        current_progress):
+        api_images = []
+        api_started = time.perf_counter()
+        for api_task_id, api_task in enumerate(api_tasks):
+            progressbar(
+                async_task,
+                min(10, current_progress + api_task_id + 1),
+                f'Generating API image {api_task_id + 1}/{len(api_tasks)} ...')
+            generated = external_api.generate_images(
+                model_key=async_task.api_model,
+                api_key=api_key,
+                prompt=api_task['api_prompt'],
+                width=width,
+                height=height,
+                num_images=1,
+                seed=api_task['task_seed'],
+                output_format=async_task.output_format,
+                enhance_prompt=async_task.api_enhance_prompt,
+                creativity=async_task.api_creativity,
+                store_io=not async_task.api_do_not_store,
+                cancel_requested=lambda: async_task.last_stop is not False,
+                status_callback=lambda message: progressbar(
+                    async_task, min(10, current_progress + 1), message),
+            )
+            api_images.extend(generated)
+        performance_metrics.record_stage(
+            'external_api', time.perf_counter() - api_started)
+        return api_images
+
     @torch.no_grad()
     @torch.inference_mode()
     def handler(async_task: AsyncTask):
@@ -1297,8 +1486,19 @@ def worker():
             use_expansion = False
 
         use_style = len(async_task.style_selections) > 0
+        api_mode = async_task.base_model_name == external_api.API_BASE_MODEL
+        api_source_images = []
+        api_source_tasks = []
+        api_local_model_name = None
+        entered_api_key = ''
+        if api_mode:
+            entered_api_key = async_task.fal_api_key \
+                if async_task.api_provider == external_api.PROVIDER_FAL \
+                else async_task.replicate_api_key
+        async_task.fal_api_key = ''
+        async_task.replicate_api_key = ''
 
-        if async_task.base_model_name == async_task.refiner_model_name:
+        if not api_mode and async_task.base_model_name == async_task.refiner_model_name:
             print(f'Refiner disabled because base model and refiner are same.')
             async_task.refiner_model_name = 'None'
 
@@ -1320,7 +1520,10 @@ def worker():
 
         print(f'[Parameters] Adaptive CFG = {async_task.adaptive_cfg}')
         print(f'[Parameters] Guidance = {async_task.guidance_mode}')
+        if async_task.guidance_mode == GUIDANCE_PAG:
+            print(f'[Parameters] PAG Scale = {async_task.pag_scale}')
         print(f'[Parameters] DeepCache = {async_task.deep_cache_profile}')
+        print(f'[Parameters] ToMeSD = {async_task.tomesd_profile}')
         print(f'[Parameters] CLIP Skip = {async_task.clip_skip}')
         print(f'[Parameters] Sharpness = {async_task.sharpness}')
         print(f'[Parameters] ControlNet Softness = {async_task.controlnet_softness}')
@@ -1357,7 +1560,9 @@ def worker():
         tasks = []
         current_progress = 1
 
-        if async_task.input_image_checkbox:
+        if async_task.input_image_checkbox and api_mode:
+            print('[External API] Input Image controls are ignored for API text-to-image generation.')
+        elif async_task.input_image_checkbox:
             base_model_additional_loras, clip_vision_path, controlnet_canny_path, controlnet_cpds_path, inpaint_head_model_path, inpaint_image, inpaint_mask, ip_adapter_face_path, ip_adapter_path, ip_negative_path, skip_prompt_processing, use_synthetic_refiner = apply_image_input(
                 async_task, base_model_additional_loras, clip_vision_path, controlnet_canny_path, controlnet_cpds_path,
                 goals, inpaint_head_model_path, inpaint_image, inpaint_mask, inpaint_parameterized, ip_adapter_face_path,
@@ -1381,17 +1586,81 @@ def worker():
         print(f'[Parameters] Sampler = {async_task.sampler_name} - {async_task.scheduler_name}')
         print(f'[Parameters] Steps = {async_task.steps} - {switch}')
 
+        if api_mode:
+            api_model = external_api.resolve_model(
+                async_task.api_provider, async_task.api_model)
+            async_task.api_model = api_model.key
+            if async_task.should_enhance and async_task.refiner_model_name == 'None':
+                message = (
+                    'Enhance skipped because no local SDXL refiner is selected. '
+                    'The API image will still be generated and saved.')
+                print(f'[External API] {message}')
+                progressbar(async_task, current_progress, message)
+                async_task.enhance_checkbox = False
+                async_task.should_enhance = False
+                async_task.enhance_uov_method = flags.disabled.casefold()
+                async_task.enhance_ctrls = []
+
+            api_key = external_api.resolve_api_key(async_task.api_provider, entered_api_key)
+            entered_api_key = ''
+
+            api_source_tasks = prepare_external_api_tasks(
+                async_task, async_task.prompt, async_task.negative_prompt,
+                async_task.image_number, use_style)
+
+            if async_task.refiner_model_name == 'None':
+                api_source_images = generate_external_source_images(
+                    async_task, api_source_tasks, api_key, width, height, current_progress)
+                api_key = ''
+                async_task.image_number = len(api_source_images)
+                direct_images = api_source_images
+                if modules.config.default_black_out_nsfw or async_task.black_out_nsfw:
+                    progressbar(async_task, 95, 'Checking for NSFW content ...')
+                    direct_images = default_censor(direct_images)
+                for index, (image, task) in enumerate(zip(direct_images, api_source_tasks)):
+                    image_height, image_width = image.shape[:2]
+                    image_paths = save_and_log(
+                        async_task, image_height, [image], task, False, image_width, [])
+                    yield_result(
+                        async_task, image_paths, 100, async_task.black_out_nsfw, False,
+                        do_not_show_finished_images=index + 1 < len(direct_images))
+                async_task.processing = False
+                return
+
+            api_local_model_name = async_task.refiner_model_name
+            denoising_strength = async_task.api_refine_strength
+
         progressbar(async_task, current_progress, 'Initializing ...')
 
         loras = async_task.loras
         if not skip_prompt_processing:
-            tasks, use_expansion, loras, current_progress = process_prompt(async_task, async_task.prompt, async_task.negative_prompt,
-                                                         base_model_additional_loras, async_task.image_number,
-                                                         async_task.disable_seed_increment, use_expansion, use_style,
-                                                         use_synthetic_refiner, current_progress, advance_progress=True)
+            try:
+                tasks, use_expansion, loras, current_progress = process_prompt(
+                    async_task, async_task.prompt, async_task.negative_prompt,
+                    base_model_additional_loras, async_task.image_number,
+                    async_task.disable_seed_increment, use_expansion, use_style,
+                    use_synthetic_refiner, current_progress, advance_progress=True,
+                    base_model_name=api_local_model_name,
+                    refiner_model_name='None' if api_mode else None)
+            except Exception as exc:
+                if api_mode:
+                    traceback.print_exc()
+                    raise external_api.ExternalAPIError(
+                        'Could not prepare local API refinement. Select a full SDXL '
+                        'checkpoint and compatible LoRAs; SDXL Refiner-only and SD 1.5 '
+                        'models are not supported here.') from exc
+                raise
             performance_metrics.update_workload(
                 loras=[[str(name), float(weight)] for name, weight in loras],
             )
+
+        if api_mode:
+            api_source_images = generate_external_source_images(
+                async_task, api_source_tasks, api_key, width, height, current_progress)
+            api_key = ''
+            async_task.image_number = len(api_source_images)
+            if api_source_images:
+                height, width = api_source_images[0].shape[:2]
 
         if len(goals) > 0:
             current_progress += 1
@@ -1443,6 +1712,7 @@ def worker():
 
         if async_task.freeu_enabled:
             apply_freeu(async_task)
+        apply_tomesd(async_task)
 
         # async_task.steps can have value of uov steps here when upscale has been applied
         steps, _, _, _ = apply_overrides(async_task, async_task.steps, height, width)
@@ -1523,17 +1793,36 @@ def worker():
             execution_start_time = time.perf_counter()
 
             try:
+                task_initial_latent = initial_latent
+                task_width = width
+                task_height = height
+                if api_mode:
+                    source_image = HWC3(api_source_images[current_task_id])
+                    source_height, source_width = source_image.shape[:2]
+                    aligned_width = max(64, int(round(source_width / 8.0)) * 8)
+                    aligned_height = max(64, int(round(source_height / 8.0)) * 8)
+                    if (aligned_width, aligned_height) != (source_width, source_height):
+                        source_image = resize_image(
+                            source_image, aligned_width, aligned_height, resize_mode=0)
+                    progressbar(
+                        async_task, current_progress,
+                        f'Encoding API image {current_task_id + 1}/{async_task.image_number} ...')
+                    task_initial_latent = core.encode_vae(
+                        vae=pipeline.final_vae,
+                        pixels=core.numpy_to_pytorch(source_image))
+                    task_height, task_width = source_image.shape[:2]
+
                 imgs, img_paths, current_progress = process_task(all_steps, async_task, callback, controlnet_canny_path,
                                                                  controlnet_cpds_path, current_task_id,
                                                                  denoising_strength, final_scheduler_name, goals,
-                                                                 initial_latent, async_task.steps, switch, task['c'],
-                                                                 task['uc'], task, loras, tiled, use_expansion, width,
-                                                                 height, current_progress, preparation_steps,
+                                                                 task_initial_latent, async_task.steps, switch, task['c'],
+                                                                 task['uc'], task, loras, tiled, use_expansion, task_width,
+                                                                 task_height, current_progress, preparation_steps,
                                                                  async_task.image_number, show_intermediate_results,
                                                                  persist_image)
 
                 current_progress = int(preparation_steps + (100 - preparation_steps) / float(all_steps) *
-                                       get_sampling_step_count(async_task.steps, initial_latent) *
+                                       get_sampling_step_count(async_task.steps, task_initial_latent) *
                                        (current_task_id + 1))
                 images_to_enhance += imgs
 
@@ -1720,6 +2009,17 @@ def worker():
                     build_image_wall(task)
                 task.yields.append(['finish', task.results])
                 pipeline.prepare_text_encoder(async_call=True)
+            except external_api.ExternalAPICancelled as exc:
+                status = 'cancelled'
+                task.processing = False
+                print(f'[External API] {exc}')
+                task.yields.append(['finish', task.results])
+            except external_api.ExternalAPIError as exc:
+                status = 'error'
+                task.processing = False
+                print(f'[External API] {exc}')
+                task.yields.append(['preview', (100, f'API error: {exc}', None)])
+                task.yields.append(['finish', task.results])
             except:
                 status = 'error'
                 traceback.print_exc()

@@ -53,7 +53,9 @@ class GenerationMetrics:
                 'scheduler': task.scheduler_name,
                 'cfg': task.cfg_scale,
                 'guidance_mode': getattr(task, 'guidance_mode', 'Standard'),
+                'pag_scale': getattr(task, 'pag_scale', 3.0),
                 'deep_cache_profile': getattr(task, 'deep_cache_profile', 'off'),
+                'tomesd_profile': getattr(task, 'tomesd_profile', 'off'),
                 'clip_skip': task.clip_skip,
                 'vae': task.vae_name,
                 'loras': [[str(name), float(weight)] for name, weight in task.loras],
@@ -82,6 +84,7 @@ class GenerationMetrics:
             'torch_compile_profile': getattr(args, 'torch_compile_profile', 'dynamic'),
             'unet_cache': getattr(args, 'unet_cache', 'off'),
             'deep_cache_default': getattr(args, 'unet_cache', 'off'),
+            'tomesd_default': getattr(args, 'tomesd', 'off'),
             'vram_policy': getattr(args, 'vram_policy', 'auto'),
         }
         model_management = sys.modules.get('ldm_patched.modules.model_management')

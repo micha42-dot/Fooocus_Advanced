@@ -361,10 +361,22 @@ default_guidance_mode = get_config_item_or_set_default(
     validator=lambda x: x in modules.flags.guidance_modes,
     expected_type=str
 )
+default_pag_scale = get_config_item_or_set_default(
+    key='default_pag_scale',
+    default_value=3.0,
+    validator=lambda x: isinstance(x, numbers.Number) and 0.0 <= x <= 10.0,
+    expected_type=numbers.Number
+)
 default_deep_cache_profile = get_config_item_or_set_default(
     key='default_deep_cache_profile',
     default_value=getattr(args_manager.args, 'unet_cache', 'off'),
     validator=lambda x: x in modules.flags.deep_cache_profiles,
+    expected_type=str
+)
+default_tomesd_profile = get_config_item_or_set_default(
+    key='default_tomesd_profile',
+    default_value=getattr(args_manager.args, 'tomesd', 'off'),
+    validator=lambda x: x in modules.flags.tomesd_profiles,
     expected_type=str
 )
 default_sample_sharpness = get_config_item_or_set_default(
@@ -520,9 +532,12 @@ default_selected_image_input_tab_id = get_config_item_or_set_default(
 default_uov_method = get_config_item_or_set_default(
     key='default_uov_method',
     default_value=modules.flags.disabled,
-    validator=lambda x: x in modules.flags.uov_list,
+    validator=lambda x: x in modules.flags.uov_list or x == modules.flags.upscale_tiled_detail_legacy,
     expected_type=str
 )
+if default_uov_method == modules.flags.upscale_tiled_detail_legacy:
+    default_uov_method = modules.flags.upscale_tiled_detail
+    config_dict['default_uov_method'] = default_uov_method
 default_controlnet_image_count = get_config_item_or_set_default(
     key='default_controlnet_image_count',
     default_value=4,
@@ -634,9 +649,12 @@ default_enhance_tabs = get_config_item_or_set_default(
 default_enhance_uov_method = get_config_item_or_set_default(
     key='default_enhance_uov_method',
     default_value=modules.flags.disabled,
-    validator=lambda x: x in modules.flags.uov_list,
-    expected_type=int
+    validator=lambda x: x in modules.flags.uov_list or x == modules.flags.upscale_tiled_detail_legacy,
+    expected_type=str
 )
+if default_enhance_uov_method == modules.flags.upscale_tiled_detail_legacy:
+    default_enhance_uov_method = modules.flags.upscale_tiled_detail
+    config_dict['default_enhance_uov_method'] = default_enhance_uov_method
 default_enhance_uov_processing_order = get_config_item_or_set_default(
     key='default_enhance_uov_processing_order',
     default_value=modules.flags.enhancement_uov_before,
@@ -750,7 +768,9 @@ possible_preset_keys = {
     "default_loras": "<processed>",
     "default_cfg_scale": "guidance_scale",
     "default_guidance_mode": "guidance_mode",
+    "default_pag_scale": "pag_scale",
     "default_deep_cache_profile": "deep_cache_profile",
+    "default_tomesd_profile": "tomesd_profile",
     "default_sample_sharpness": "sharpness",
     "default_cfg_tsnr": "adaptive_cfg",
     "default_clip_skip": "clip_skip",

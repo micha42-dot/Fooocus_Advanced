@@ -6,7 +6,8 @@ subtle_variation = 'Vary (Subtle)'
 strong_variation = 'Vary (Strong)'
 upscale_15 = 'Upscale (1.5x)'
 upscale_2 = 'Upscale (2x)'
-upscale_tiled_detail = 'Upscale (Tiled SDXL Detail 2x)'
+upscale_tiled_detail_legacy = 'Upscale (Tiled SDXL Detail 2x)'
+upscale_tiled_detail = 'Upscale (Tiled SDXL Detail 2.0, 2x)'
 upscale_fast = 'Upscale (Fast 2x)'
 
 uov_list = [disabled, subtle_variation, strong_variation, upscale_15, upscale_2, upscale_tiled_detail, upscale_fast]
@@ -61,8 +62,9 @@ SAMPLER_NAMES = KSAMPLER_NAMES + list(SAMPLER_EXTRA.keys())
 
 sampler_list = SAMPLER_NAMES
 scheduler_list = SCHEDULER_NAMES
-guidance_modes = ['Standard', 'APG', 'CFG++']
+guidance_modes = ['Standard', 'APG', 'CFG++', 'PAG']
 deep_cache_profiles = ['off', 'conservative', 'balanced', 'aggressive']
+tomesd_profiles = ['off', 'conservative', 'balanced', 'aggressive']
 
 clip_skip_max = 12
 
@@ -87,9 +89,23 @@ default_parameters = {
 
 output_formats = ['png', 'jpeg', 'webp']
 
-inpaint_mask_models = ['u2net', 'u2netp', 'u2net_human_seg', 'u2net_cloth_seg', 'silueta', 'isnet-general-use', 'isnet-anime', 'sam', 'sam3']
+inpaint_mask_sam3 = 'sam3'
+inpaint_mask_sam3_label = 'sam3 (Recommended / latest enhancement model)'
+inpaint_mask_models = ['u2net', 'u2netp', 'u2net_human_seg', 'u2net_cloth_seg', 'silueta', 'isnet-general-use', 'isnet-anime', 'sam', inpaint_mask_sam3]
+inpaint_mask_model_choices = [
+    inpaint_mask_sam3_label if model == inpaint_mask_sam3 else model
+    for model in inpaint_mask_models
+]
 inpaint_mask_cloth_category = ['full', 'upper', 'lower']
 inpaint_mask_sam_model = ['vit_b', 'vit_l', 'vit_h']
+
+
+def normalize_inpaint_mask_model(model):
+    return inpaint_mask_sam3 if model == inpaint_mask_sam3_label else model
+
+
+def display_inpaint_mask_model(model):
+    return inpaint_mask_sam3_label if model == inpaint_mask_sam3 else model
 
 inpaint_engine_versions = ['None', 'v1', 'v2.5', 'v2.6']
 inpaint_option_default = 'Inpaint or Outpaint (default)'
@@ -133,6 +149,7 @@ class OutputFormat(Enum):
 
 class PerformanceLoRA(Enum):
     QUALITY = None
+    QUALITY_10 = None
     SPEED = None
     EXTREME_SPEED = 'sdxl_lcm_lora.safetensors'
     LIGHTNING = 'sdxl_lightning_4step_lora.safetensors'
@@ -141,6 +158,7 @@ class PerformanceLoRA(Enum):
 
 class Steps(IntEnum):
     QUALITY = 60
+    QUALITY_10 = 10
     SPEED = 30
     EXTREME_SPEED = 8
     LIGHTNING = 4
@@ -153,6 +171,7 @@ class Steps(IntEnum):
 
 class StepsUOV(IntEnum):
     QUALITY = 36
+    QUALITY_10 = 10
     SPEED = 18
     EXTREME_SPEED = 8
     LIGHTNING = 4
@@ -161,6 +180,7 @@ class StepsUOV(IntEnum):
 
 class Performance(Enum):
     QUALITY = 'Quality'
+    QUALITY_10 = 'Quality 10 (AYS)'
     SPEED = 'Speed'
     EXTREME_SPEED = 'Extreme Speed'
     LIGHTNING = 'Lightning'
@@ -192,6 +212,16 @@ class Performance(Enum):
 
     def lora_filename(self) -> str | None:
         return PerformanceLoRA[self.name].value if self.name in PerformanceLoRA.__members__ else None
+
+    def sampler_name(self) -> str | None:
+        if self == Performance.QUALITY_10:
+            return 'dpmpp_2m_sde_gpu'
+        return None
+
+    def scheduler_name(self) -> str | None:
+        if self == Performance.QUALITY_10:
+            return 'align_your_steps'
+        return None
 
 
 performance_selections = []

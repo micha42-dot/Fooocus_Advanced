@@ -4,7 +4,10 @@ import torch
 GUIDANCE_STANDARD = 'Standard'
 GUIDANCE_APG = 'APG'
 GUIDANCE_CFGPP = 'CFG++'
-GUIDANCE_MODES = [GUIDANCE_STANDARD, GUIDANCE_APG, GUIDANCE_CFGPP]
+GUIDANCE_PAG = 'PAG'
+GUIDANCE_MODES = [GUIDANCE_STANDARD, GUIDANCE_APG, GUIDANCE_CFGPP, GUIDANCE_PAG]
+
+PAG_APPLIED_LAYER = ('middle', 0, 0)
 
 CFGPP_SAMPLERS = {
     'euler',
@@ -26,6 +29,33 @@ def supports_cfgpp_sampler(sampler_name):
 def cfgpp_scale(cfg_scale):
     """Map Fooocus' familiar CFG range to CFG++'s lambda range [0, 1]."""
     return max(0.0, min(1.0, float(cfg_scale) / 12.5))
+
+
+def perturbed_attention_guidance(base, cond, perturbed, scale):
+    return base + float(scale) * (cond - perturbed)
+
+
+def pag_identity_attention(q, k, v, extra_options=None):
+    """Replace self-attention mixing with an identity attention map."""
+    return v
+
+
+def make_pag_model_options(model_options):
+    options = dict(model_options or {})
+    transformer_options = dict(options.get('transformer_options', {}))
+
+    original_replacements = transformer_options.get('patches_replace', {})
+    replacements = {
+        name: dict(patches)
+        for name, patches in original_replacements.items()
+    }
+    attention_replacements = dict(replacements.get('attn1', {}))
+    attention_replacements[PAG_APPLIED_LAYER] = pag_identity_attention
+    replacements['attn1'] = attention_replacements
+
+    transformer_options['patches_replace'] = replacements
+    options['transformer_options'] = transformer_options
+    return options
 
 
 def adaptive_projected_guidance(

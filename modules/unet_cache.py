@@ -113,6 +113,7 @@ class DeepCache:
 
         if (not isinstance(x, torch.Tensor) or control is not None
                 or transformer_options.get('patches')
+                or transformer_options.get('patches_replace')
                 or not self._is_full_image(x, transformer_options)
                 or input_blocks != output_blocks):
             self.bypasses += 1
