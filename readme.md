@@ -24,7 +24,7 @@ I'm cheekily calling it simply Fooocus Advanced.
 
 ### Windows installation
 
-To install Fooocus Advanced, download two packages: **Fooocus Advanced** itself and **Python Embedded**, which contains the Python environment required to run Fooocus Advanced.
+To install Fooocus Advanced, download two packages: **Fooocus Advanced** itself and [**Python Embedded**](https://github.com/micha42-dot/Fooocus_Advanced/releases/download/v0.2.5/python_embeded.7z), which contains the Python environment required to run Fooocus Advanced.
 
 Extract both packages into the same directory. The `python_embeded` folder from the Python Embedded package must be placed next to the BAT files and the `Fooocus` folder, not inside the `Fooocus` folder. The final folder structure should look like this:
 
