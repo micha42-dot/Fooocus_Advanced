@@ -137,19 +137,19 @@ def calc_cond_uncond_batch(model, cond, uncond, x_in, timestep, model_options):
     UNCOND = 1
 
     to_run = []
-    for x in cond:
+    for condition_index, x in enumerate(cond):
         p = get_area_and_mult(x, x_in, timestep)
         if p is None:
             continue
 
-        to_run += [(p, COND)]
+        to_run += [(p, COND, condition_index)]
     if uncond is not None:
-        for x in uncond:
+        for condition_index, x in enumerate(uncond):
             p = get_area_and_mult(x, x_in, timestep)
             if p is None:
                 continue
 
-            to_run += [(p, UNCOND)]
+            to_run += [(p, UNCOND, condition_index)]
 
     while len(to_run) > 0:
         first = to_run[0]
@@ -174,6 +174,7 @@ def calc_cond_uncond_batch(model, cond, uncond, x_in, timestep, model_options):
         mult = []
         c = []
         cond_or_uncond = []
+        conditioning_slots = []
         area = []
         control = None
         patches = None
@@ -185,6 +186,7 @@ def calc_cond_uncond_batch(model, cond, uncond, x_in, timestep, model_options):
             c.append(p.conditioning)
             area.append(p.area)
             cond_or_uncond.append(o[1])
+            conditioning_slots.append((o[1], o[2]))
             control = p.control
             patches = p.patches
 
@@ -212,7 +214,9 @@ def calc_cond_uncond_batch(model, cond, uncond, x_in, timestep, model_options):
                 transformer_options["patches"] = patches
 
         transformer_options["cond_or_uncond"] = cond_or_uncond[:]
+        transformer_options["fooocus_conditioning_slots"] = conditioning_slots
         transformer_options["sigmas"] = timestep
+        transformer_options["fooocus_full_shape"] = list(x_in.shape)
 
         c['transformer_options'] = transformer_options
 
@@ -536,8 +540,16 @@ class KSAMPLER(Sampler):
         model_k = KSamplerX0Inpaint(model_wrap)
         model_k.latent_image = latent_image
         if self.inpaint_options.get("random", False): #TODO: Should this be the default?
-            generator = torch.manual_seed(extra_args.get("seed", 41) + 1)
-            model_k.noise = torch.randn(noise.shape, generator=generator, device="cpu").to(noise.dtype).to(noise.device)
+            seed = extra_args.get("seed", 41)
+            if isinstance(seed, (list, tuple)):
+                model_k.noise = torch.cat([
+                    torch.randn([1] + list(noise.shape[1:]),
+                                generator=torch.manual_seed(int(item_seed) + 1), device="cpu")
+                    for item_seed in seed
+                ], dim=0).to(noise.dtype).to(noise.device)
+            else:
+                generator = torch.manual_seed(seed + 1)
+                model_k.noise = torch.randn(noise.shape, generator=generator, device="cpu").to(noise.dtype).to(noise.device)
         else:
             model_k.noise = noise
 

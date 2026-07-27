@@ -4,6 +4,10 @@ from ldm_patched.modules.args_parser import args
 import ldm_patched.modules.utils
 import torch
 import sys
+import statistics
+
+from modules.vram_policy import (VRAM_POLICY_BALANCED, VRAM_POLICY_CONSERVATIVE,
+                                 VRAM_POLICY_RESIDENT, choose_vram_policy)
 
 class VRAMState(Enum):
     DISABLED = 0    #No vram present: no need to move models to vram
@@ -200,6 +204,113 @@ elif args.vae_in_fp32:
     VAE_DTYPE = torch.float32
 
 
+def _time_attention_operator(operator, warmup=2, iterations=5):
+    for _ in range(warmup):
+        operator()
+
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    for _ in range(iterations):
+        operator()
+    end.record()
+    torch.cuda.synchronize()
+    return start.elapsed_time(end) / iterations
+
+
+def _benchmark_attention_backends():
+    results = {'pytorch': [], 'xformers': []}
+    shapes = [
+        (2, 4096, 8, 40),
+        (2, 1024, 10, 64),
+    ]
+
+    with torch.inference_mode():
+        for shape in shapes:
+            q = torch.randn(shape, device=get_torch_device(), dtype=torch.float16)
+            k = torch.randn_like(q)
+            v = torch.randn_like(q)
+            q_pytorch = q.permute(0, 2, 1, 3)
+            k_pytorch = k.permute(0, 2, 1, 3)
+            v_pytorch = v.permute(0, 2, 1, 3)
+
+            pytorch_operator = lambda: torch.nn.functional.scaled_dot_product_attention(
+                q_pytorch, k_pytorch, v_pytorch, dropout_p=0.0, is_causal=False)
+            xformers_operator = lambda: xformers.ops.memory_efficient_attention(q, k, v)
+
+            pytorch_output = pytorch_operator().permute(0, 2, 1, 3)
+            xformers_output = xformers_operator()
+            if not torch.isfinite(pytorch_output).all() or not torch.isfinite(xformers_output).all():
+                raise RuntimeError('attention backend produced non-finite values')
+            relative_error = float(
+                ((pytorch_output - xformers_output).abs().mean()
+                 / pytorch_output.abs().mean().clamp_min(1e-6)).float().cpu())
+            if relative_error > 0.02:
+                raise RuntimeError(f'xFormers relative error is too high ({relative_error:.4f})')
+
+            results['pytorch'].append(_time_attention_operator(pytorch_operator))
+            results['xformers'].append(_time_attention_operator(xformers_operator))
+
+            del q, k, v, q_pytorch, k_pytorch, v_pytorch, pytorch_output, xformers_output
+
+    torch.cuda.empty_cache()
+    pytorch_ms = statistics.median(results['pytorch'])
+    xformers_ms = statistics.median(results['xformers'])
+    selected = 'pytorch' if pytorch_ms <= xformers_ms else 'xformers'
+    print(f'[Performance] Attention benchmark: PyTorch {pytorch_ms:.2f} ms, '
+          f'xFormers {xformers_ms:.2f} ms. Selected {selected}.')
+    return selected
+
+
+def _select_attention_backend():
+    global ENABLE_PYTORCH_ATTENTION, XFORMERS_IS_AVAILABLE
+
+    requested = getattr(args, 'attention_backend', 'legacy')
+    if args.attention_pytorch:
+        requested = 'pytorch'
+
+    if requested == 'legacy':
+        return
+    if requested == 'pytorch':
+        ENABLE_PYTORCH_ATTENTION = True
+        XFORMERS_IS_AVAILABLE = False
+        print('[Performance] PyTorch SDPA attention selected.')
+        return
+    if requested == 'xformers':
+        if XFORMERS_IS_AVAILABLE:
+            ENABLE_PYTORCH_ATTENTION = False
+            print('[Performance] xFormers attention selected.')
+        else:
+            ENABLE_PYTORCH_ATTENTION = True
+            print('[Performance] xFormers is unavailable; using PyTorch SDPA attention.')
+        return
+
+    if not XFORMERS_IS_AVAILABLE:
+        ENABLE_PYTORCH_ATTENTION = True
+        print('[Performance] xFormers is unavailable; using PyTorch SDPA attention.')
+        return
+    if not ENABLE_PYTORCH_ATTENTION or not is_nvidia():
+        print('[Performance] PyTorch SDPA benchmark is unavailable; using xFormers attention.')
+        return
+
+    try:
+        selected = _benchmark_attention_backends()
+    except Exception as error:
+        ENABLE_PYTORCH_ATTENTION = True
+        XFORMERS_IS_AVAILABLE = False
+        print(f'[Performance] Attention benchmark failed; using PyTorch SDPA: {error}')
+        return
+
+    if selected == 'pytorch':
+        ENABLE_PYTORCH_ATTENTION = True
+        XFORMERS_IS_AVAILABLE = False
+    else:
+        ENABLE_PYTORCH_ATTENTION = False
+
+
+_select_attention_backend()
+
+
 if ENABLE_PYTORCH_ATTENTION:
     torch.backends.cuda.enable_math_sdp(True)
     torch.backends.cuda.enable_flash_sdp(True)
@@ -236,10 +347,35 @@ if cpu_state == CPUState.MPS:
 
 print(f"Set vram state to: {vram_state.name}")
 
-ALWAYS_VRAM_OFFLOAD = args.always_offload_from_vram
+VRAM_POLICY_LOCKED = args.disable_offload_from_vram or args.always_gpu or args.always_high_vram
+ACTIVE_VRAM_POLICY = choose_vram_policy(
+    total_vram_mb=total_vram,
+    requested=getattr(args, 'vram_policy', 'auto'),
+    force_resident=VRAM_POLICY_LOCKED
+)
+
+ALWAYS_VRAM_OFFLOAD = ACTIVE_VRAM_POLICY == VRAM_POLICY_CONSERVATIVE
+print(f'[VRAM] Active policy: {ACTIVE_VRAM_POLICY}.')
 
 if ALWAYS_VRAM_OFFLOAD:
     print("Always offload VRAM")
+
+
+def downgrade_vram_policy(reason='memory pressure'):
+    global ACTIVE_VRAM_POLICY, ALWAYS_VRAM_OFFLOAD, vram_state
+
+    if VRAM_POLICY_LOCKED:
+        return False
+    if ACTIVE_VRAM_POLICY == VRAM_POLICY_RESIDENT:
+        ACTIVE_VRAM_POLICY = VRAM_POLICY_BALANCED
+    elif ACTIVE_VRAM_POLICY == VRAM_POLICY_BALANCED:
+        ACTIVE_VRAM_POLICY = VRAM_POLICY_CONSERVATIVE
+        ALWAYS_VRAM_OFFLOAD = True
+    else:
+        return False
+
+    print(f'[VRAM] Downgraded to {ACTIVE_VRAM_POLICY} after {reason}.')
+    return True
 
 def get_torch_device_name(device):
     if hasattr(device, 'type'):
@@ -342,7 +478,11 @@ class LoadedModel:
         return self.model is other.model
 
 def minimum_inference_memory():
-    return (1024 * 1024 * 1024)
+    if ACTIVE_VRAM_POLICY == VRAM_POLICY_RESIDENT:
+        return 512 * 1024 * 1024
+    if ACTIVE_VRAM_POLICY == VRAM_POLICY_CONSERVATIVE:
+        return 1280 * 1024 * 1024
+    return 1024 * 1024 * 1024
 
 def unload_model_clones(model):
     to_unload = []
@@ -640,6 +780,14 @@ def xformers_enabled_vae():
 def pytorch_attention_enabled():
     global ENABLE_PYTORCH_ATTENTION
     return ENABLE_PYTORCH_ATTENTION
+
+
+def active_attention_backend():
+    if ENABLE_PYTORCH_ATTENTION:
+        return 'pytorch'
+    if XFORMERS_IS_AVAILABLE:
+        return 'xformers'
+    return 'legacy'
 
 def pytorch_attention_flash_attention():
     global ENABLE_PYTORCH_ATTENTION
