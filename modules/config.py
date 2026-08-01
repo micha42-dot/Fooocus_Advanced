@@ -387,13 +387,13 @@ default_sample_sharpness = get_config_item_or_set_default(
 )
 default_sampler = get_config_item_or_set_default(
     key='default_sampler',
-    default_value='dpmpp_2m_sde_gpu',
+    default_value=modules.flags.factory_default_sampler,
     validator=lambda x: x in modules.flags.sampler_list,
     expected_type=str
 )
 default_scheduler = get_config_item_or_set_default(
     key='default_scheduler',
-    default_value='karras',
+    default_value=modules.flags.factory_default_scheduler,
     validator=lambda x: x in modules.flags.scheduler_list,
     expected_type=str
 )

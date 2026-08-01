@@ -12,6 +12,7 @@ from extras.expansion import FooocusExpansion
 from modules.clip_cache import get_clip_cache
 
 from ldm_patched.modules.model_base import SDXL, SDXLRefiner
+from ldm_patched.modules.supported_models import SD15
 from modules.sample_hijack import clip_separate
 from modules.util import get_file_from_folder_list, get_enabled_loras
 
@@ -27,6 +28,16 @@ final_refiner_unet = None
 final_refiner_vae = None
 
 loaded_ControlNets = {}
+
+
+def is_sd15_base_model():
+    model = getattr(model_base.unet_with_lora, 'model', None)
+    return model is not None and isinstance(model.model_config, SD15)
+
+
+def supports_prompt_expansion():
+    model = getattr(model_base.unet_with_lora, 'model', None)
+    return isinstance(model, SDXL)
 
 
 @torch.no_grad()
@@ -49,8 +60,11 @@ def refresh_controlnets(model_paths):
 def assert_model_integrity():
     error_message = None
 
-    if not isinstance(model_base.unet_with_lora.model, SDXL):
-        error_message = 'You have selected base model other than SDXL. This is not supported yet.'
+    if not isinstance(model_base.unet_with_lora.model, SDXL) and not is_sd15_base_model():
+        error_message = (
+            'The selected base model is not supported. '
+            'Fooocus Advanced currently supports SDXL and SD 1.4/1.5 base models.'
+        )
 
     if error_message is not None:
         raise NotImplementedError(error_message)
@@ -227,7 +241,10 @@ def prepare_text_encoder(async_call=True):
         # TODO: make sure that this is always called in an async way so that users cannot feel it.
         pass
     assert_model_integrity()
-    ldm_patched.modules.model_management.load_models_gpu([final_clip.patcher, final_expansion.patcher])
+    models = [final_clip.patcher]
+    if supports_prompt_expansion() and final_expansion is not None:
+        models.append(final_expansion.patcher)
+    ldm_patched.modules.model_management.load_models_gpu(models)
     return
 
 
@@ -251,6 +268,10 @@ def refresh_everything(refiner_model_name, base_model_name, loras,
         refresh_refiner_model(refiner_model_name)
         refresh_base_model(base_model_name, vae_name)
 
+    if is_sd15_base_model() and model_refiner.unet is not None:
+        print('[SD1] Refiner disabled for the initial SD 1.4/1.5 text-to-image implementation.')
+        refresh_refiner_model('None')
+
     refresh_loras(loras, base_model_additional_loras=base_model_additional_loras)
     assert_model_integrity()
 
@@ -261,7 +282,7 @@ def refresh_everything(refiner_model_name, base_model_name, loras,
     final_refiner_unet = model_refiner.unet_with_lora
     final_refiner_vae = model_refiner.vae
 
-    if final_expansion is None:
+    if supports_prompt_expansion() and final_expansion is None:
         final_expansion = FooocusExpansion()
 
     prepare_text_encoder(async_call=True)

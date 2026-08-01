@@ -60,8 +60,54 @@ KSAMPLER_NAMES = list(KSAMPLER.keys())
 SCHEDULER_NAMES = ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "lcm", "turbo", "align_your_steps", "tcd", "edm_playground_v2.5"]
 SAMPLER_NAMES = KSAMPLER_NAMES + list(SAMPLER_EXTRA.keys())
 
+factory_default_sampler = "dpmpp_2m_sde_gpu"
+factory_default_scheduler = "karras"
+
+SAMPLER_DESCRIPTIONS = {
+    "euler": "Fast deterministic first-order sampler; a reliable general-purpose baseline.",
+    "euler_ancestral": "Ancestral Euler variant that adds noise between steps for more variation and texture.",
+    "heun": "Second-order deterministic solver with smoother results, but roughly twice the model evaluations per step.",
+    "heunpp2": "Refined Heun variant designed for smoother high-noise transitions and detailed results.",
+    "dpm_2": "Deterministic second-order DPM solver; smooth and accurate, with extra model evaluations.",
+    "dpm_2_ancestral": "Ancestral DPM2 variant that trades strict determinism for variation and texture.",
+    "lms": "Linear multistep sampler that becomes more effective with moderate or higher step counts.",
+    "dpm_fast": "Fixed-budget DPM solver focused on reaching a result quickly; less predictable than curated defaults.",
+    "dpm_adaptive": "Adaptive DPM solver that chooses its own step sizes; runtime and effective step count may vary.",
+    "dpmpp_2s_ancestral": "Two-stage ancestral DPM++ sampler with crisp detail and creative variation.",
+    "dpmpp_sde": "Stochastic DPM++ SDE sampler with rich texture and strong detail, at higher compute cost.",
+    "dpmpp_sde_gpu": "GPU-noise variant of DPM++ SDE; usually faster, but not pixel-identical to the CPU-noise version.",
+    "dpmpp_2m": "Efficient deterministic multistep DPM++ sampler; an excellent general-purpose quality/speed choice.",
+    "dpmpp_2m_sde": "Stochastic multistep DPM++ sampler balancing coherent structure with natural texture.",
+    "dpmpp_2m_sde_gpu": "GPU-noise variant of DPM++ 2M SDE; fast and well suited to common SDXL workflows.",
+    "dpmpp_3m_sde": "Higher-order stochastic multistep solver that can reward longer runs with refined detail.",
+    "dpmpp_3m_sde_gpu": "GPU-noise variant of DPM++ 3M SDE; higher-order detail with faster noise generation.",
+    "ddpm": "Original stochastic diffusion-style sampler; mainly useful for experiments and compatible workflows.",
+    "lcm": "Few-step Latent Consistency sampler; use with an LCM model or LoRA and the matching LCM scheduler.",
+    "tcd": "Few-step Trajectory Consistency sampler; intended for compatible TCD models or LoRAs.",
+    "restart": "Uses controlled noise restarts during sampling to recover detail, with additional processing cost.",
+    "ddim": "Classic implicit sampler with stable, repeatable behavior and a comparatively restrained look.",
+    "uni_pc": "High-order predictor-corrector sampler offering good quality at low to moderate step counts.",
+    "uni_pc_bh2": "Alternate UniPC BH2 solver variant with different stability and sharpness characteristics.",
+}
+
+SCHEDULER_DESCRIPTIONS = {
+    "normal": "Uses the model's standard discrete noise schedule; broad compatibility and a dependable baseline.",
+    "karras": "Karras sigma schedule concentrates more work near low noise, often improving final detail.",
+    "exponential": "Spaces sigma values exponentially for even coverage across the logarithmic noise range.",
+    "sgm_uniform": "Uniform SGM timestep schedule; commonly paired with distilled and consistency workflows.",
+    "simple": "Selects a simple sequence from the model's native sigma table; predictable but less finely tuned.",
+    "ddim_uniform": "Uniform DDIM timestep schedule for classic DDIM-style sampling behavior.",
+    "lcm": "LCM-compatible model schedule for very low step counts; use with the LCM sampler and model or LoRA.",
+    "turbo": "Schedule intended for SDXL Turbo and similar few-step distilled models.",
+    "align_your_steps": "Optimized Align Your Steps schedule with dedicated SD1 and SDXL noise levels; used by Quality 10 and especially effective around 10 steps.",
+    "tcd": "TCD-compatible schedule for few-step Trajectory Consistency sampling.",
+    "edm_playground_v2.5": "Continuous EDM schedule configured for Playground v2.5; not a general SDXL default.",
+}
+
 sampler_list = SAMPLER_NAMES
 scheduler_list = SCHEDULER_NAMES
+sampler_descriptions = SAMPLER_DESCRIPTIONS
+scheduler_descriptions = SCHEDULER_DESCRIPTIONS
 guidance_modes = ['Standard', 'APG', 'CFG++', 'PAG']
 deep_cache_profiles = ['off', 'conservative', 'balanced', 'aggressive']
 tomesd_profiles = ['off', 'conservative', 'balanced', 'aggressive']
@@ -123,6 +169,12 @@ sdxl_aspect_ratios = [
     '1088*960', '1088*896', '1152*896', '1152*832', '1216*832', '1280*768',
     '1344*768', '1344*704', '1408*704', '1472*704', '1536*640', '1600*640',
     '1664*576', '1728*576'
+]
+
+sd15_aspect_ratios = [
+    '384*640', '448*576', '512*768', '512*704', '512*640', '512*576',
+    '512*512', '576*512', '640*512', '704*512', '768*512', '576*704',
+    '640*640', '704*576', '768*768'
 ]
 
 

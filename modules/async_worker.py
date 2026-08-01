@@ -10,6 +10,7 @@ from modules.guidance import (
     supports_cfgpp_sampler,
 )
 import modules.config
+import modules.model_families as model_families
 
 patch_all()
 
@@ -1016,6 +1017,9 @@ def worker():
                                     base_model_name=base_model_name or async_task.base_model_name,
                                     loras=loras, base_model_additional_loras=base_model_additional_loras,
                                     use_synthetic_refiner=use_synthetic_refiner, vae_name=async_task.vae_name)
+        if use_expansion and not pipeline.supports_prompt_expansion():
+            print('[SD1] Fooocus V2 prompt expansion is SDXL-only and has been disabled.')
+            use_expansion = False
         pipeline.set_clip_skip(async_task.clip_skip)
         if advance_progress:
             current_progress += 1
@@ -1487,6 +1491,33 @@ def worker():
 
         use_style = len(async_task.style_selections) > 0
         api_mode = async_task.base_model_name == external_api.API_BASE_MODEL
+        base_model_family = model_families.FAMILY_UNKNOWN
+        if not api_mode:
+            base_model_family = model_families.detect_model_family(
+                async_task.base_model_name,
+                modules.config.paths_checkpoints,
+            )
+        sd1_base_mode = base_model_family == model_families.FAMILY_SD1
+
+        if sd1_base_mode:
+            if use_expansion:
+                print('[SD1] Fooocus V2 prompt expansion is SDXL-only and has been disabled.')
+                use_expansion = False
+            if async_task.refiner_model_name != 'None':
+                print('[SD1] Refiner disabled for SD 1.4/1.5 base generation.')
+                async_task.refiner_model_name = 'None'
+            if async_task.input_image_checkbox:
+                print('[SD1] Image Input is not part of the initial SD 1.4/1.5 implementation; using text-to-image.')
+                async_task.input_image_checkbox = False
+            if flags.Performance.has_restricted_features(async_task.performance_selection):
+                print(
+                    f'[SD1] {async_task.performance_selection.value} uses an SDXL LoRA; '
+                    f'falling back to {Performance.SPEED.value}.'
+                )
+                async_task.performance_selection = Performance.SPEED
+                async_task.steps = async_task.performance_selection.steps()
+                async_task.original_steps = async_task.steps
+
         api_source_images = []
         api_source_tasks = []
         api_local_model_name = None
