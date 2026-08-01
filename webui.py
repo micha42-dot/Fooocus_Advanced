@@ -10,8 +10,10 @@ import modules.html
 import modules.async_worker as worker
 import modules.constants as constants
 import modules.flags as flags
+import modules.config_persistence as config_persistence
 import modules.external_api as external_api
 import modules.gradio_hijack as grh
+import modules.model_families as model_families
 import modules.style_sorter as style_sorter
 import modules.meta_parser
 import args_manager
@@ -669,6 +671,52 @@ with shared.gradio_root:
             enhance_checkbox.change(lambda x: gr.update(visible=x), inputs=enhance_checkbox,
                                         outputs=enhance_input_panel, queue=False, show_progress=False, _js=switch_js)
 
+        initial_base_model = modules.config.default_base_model_name
+        initial_model_family = model_families.detect_model_family(
+            initial_base_model,
+            modules.config.paths_checkpoints,
+        )
+        initial_sd1_mode = initial_model_family == model_families.FAMILY_SD1
+
+        def get_aspect_ratio_state(base_name, current_value):
+            family = model_families.detect_model_family(
+                base_name,
+                modules.config.paths_checkpoints,
+            )
+            ratios = flags.sd15_aspect_ratios \
+                if family == model_families.FAMILY_SD1 \
+                else modules.config.available_aspect_ratios
+            choices = [modules.config.add_ratio(ratio) for ratio in ratios]
+            preferred = modules.config.add_ratio('512*512') \
+                if family == model_families.FAMILY_SD1 \
+                else modules.config.default_aspect_ratio
+            value = model_families.choose_resolution(current_value, choices, preferred)
+            return choices, value
+
+        def get_performance_state(base_name, current_value):
+            family = model_families.detect_model_family(
+                base_name,
+                modules.config.paths_checkpoints,
+            )
+            if family == model_families.FAMILY_SD1:
+                choices = [
+                    choice for choice in flags.performance_selections
+                    if not flags.Performance.has_restricted_features(choice[1])
+                ]
+                allowed_values = [choice[1] for choice in choices]
+                value = current_value if current_value in allowed_values else flags.Performance.SPEED.value
+                return choices, value
+            return flags.performance_selections, current_value
+
+        initial_aspect_choices, initial_aspect_value = get_aspect_ratio_state(
+            initial_base_model,
+            modules.config.default_aspect_ratio,
+        )
+        initial_performance_choices, initial_performance_value = get_performance_state(
+            initial_base_model,
+            modules.config.default_performance,
+        )
+
         with gr.Column(scale=1, visible=modules.config.default_advanced_checkbox) as advanced_column:
             with gr.Tab(label='Settings'):
                 if not args_manager.args.disable_preset_selection:
@@ -679,14 +727,14 @@ with shared.gradio_root:
 
                 performance_selection = gr.Radio(label='Performance',
                                                  info='* = restricted feature set, intermediate results disabled',
-                                                 choices=modules.flags.performance_selections,
-                                                 value=modules.config.default_performance,
+                                                 choices=initial_performance_choices,
+                                                 value=initial_performance_value,
                                                  elem_classes='performance_selections')
 
                 with gr.Accordion(label='Aspect Ratios', open=False, elem_id='aspect_ratios_accordion') as aspect_ratios_accordion:
                     aspect_ratios_selection = gr.Radio(label='Aspect Ratios', show_label=False,
-                                                       choices=modules.config.available_aspect_ratios_labels,
-                                                       value=modules.config.default_aspect_ratio,
+                                                       choices=initial_aspect_choices,
+                                                       value=initial_aspect_value,
                                                        info='width × height',
                                                        elem_classes='aspect_ratios')
 
@@ -771,15 +819,16 @@ with shared.gradio_root:
 
             with gr.Tab(label='Models'):
                 with gr.Group():
-                    initial_base_model = modules.config.default_base_model_name
                     initial_refiner_model = external_api.select_refiner_for_base(
                         initial_base_model,
                         modules.config.default_refiner_model_name,
                         reset_api_refiner=True)
+                    if initial_sd1_mode:
+                        initial_refiner_model = 'None'
                     initial_api_mode = initial_base_model == external_api.API_BASE_MODEL
                     with gr.Row():
                         base_model = gr.Dropdown(
-                            label='Base Model (SDXL or API)',
+                            label='Base Model (SDXL, SD 1.4/1.5, or API)',
                             choices=modules.config.model_filenames + [external_api.API_BASE_MODEL],
                             value=initial_base_model,
                             show_label=True)
@@ -787,6 +836,7 @@ with shared.gradio_root:
                             label='Refiner (Optional, SDXL or SD 1.5)',
                             choices=['None'] + modules.config.model_filenames,
                             value=initial_refiner_model,
+                            interactive=not initial_sd1_mode,
                             show_label=True)
 
                     refiner_switch = gr.Slider(label='Refiner Switch At', minimum=0.1, maximum=1.0, step=0.0001,
@@ -820,24 +870,42 @@ with shared.gradio_root:
                             gr.update(visible=has_refiner and is_api),
                         )
 
-                    def base_model_changed(base_name, refiner_name):
-                        refiner_name = external_api.select_refiner_for_base(
-                            base_name, refiner_name, reset_api_refiner=True)
+                    def base_model_changed(base_name, refiner_name, current_aspect, current_performance):
+                        family = model_families.detect_model_family(
+                            base_name,
+                            modules.config.paths_checkpoints,
+                        )
+                        is_sd1 = family == model_families.FAMILY_SD1
+                        if is_sd1:
+                            refiner_name = 'None'
+                        else:
+                            refiner_name = external_api.select_refiner_for_base(
+                                base_name, refiner_name, reset_api_refiner=True)
                         api_group_update, refiner_switch_update, api_refine_update = \
                             update_model_controls(base_name, refiner_name)
+                        aspect_choices, aspect_value = get_aspect_ratio_state(
+                            base_name, current_aspect)
+                        performance_choices, performance_value = get_performance_state(
+                            base_name, current_performance)
                         return (
                             api_group_update,
-                            gr.update(value=refiner_name),
+                            gr.update(value=refiner_name, interactive=not is_sd1),
                             refiner_switch_update,
                             api_refine_update,
+                            gr.update(choices=aspect_choices, value=aspect_value),
+                            gr.update(choices=performance_choices, value=performance_value),
                         )
 
                     base_model.change(
                         base_model_changed,
-                        inputs=[base_model, refiner_model],
+                        inputs=[
+                            base_model, refiner_model,
+                            aspect_ratios_selection, performance_selection,
+                        ],
                         outputs=[
                             api_model_group, refiner_model,
                             refiner_switch, api_refine_strength,
+                            aspect_ratios_selection, performance_selection,
                         ],
                         show_progress=False,
                         queue=False)
@@ -847,6 +915,11 @@ with shared.gradio_root:
                         outputs=[api_model_group, refiner_switch, api_refine_strength],
                         show_progress=False,
                         queue=False)
+                    model_dependent_outputs = [
+                        api_model_group, refiner_model,
+                        refiner_switch, api_refine_strength,
+                        aspect_ratios_selection, performance_selection,
+                    ]
 
                 with gr.Group():
                     lora_ctrls = []
@@ -1024,6 +1097,24 @@ with shared.gradio_root:
                     '*ToMeSD is deterministic and is disabled automatically with PAG or `torch.compile`. '
                     'When combined with ToMeSD, DeepCache is disabled.*'
                 )
+                sampler_info_text = (
+                    '**Sampler options**\n\n'
+                    + '\n'.join(
+                        f'- `{name}` - {description}'
+                        for name, description in flags.sampler_descriptions.items()
+                    )
+                    + '\n\n*Performance presets may override this selection. GPU variants use GPU-based noise '
+                      'and can produce different pixels from their non-GPU counterparts.*'
+                )
+                scheduler_info_text = (
+                    '**Scheduler options**\n\n'
+                    + '\n'.join(
+                        f'- `{name}` - {description}'
+                        for name, description in flags.scheduler_descriptions.items()
+                    )
+                    + '\n\n*Match specialized schedules such as LCM, TCD, Turbo, and Playground to a compatible '
+                      'sampler and model. Fooocus performance presets may override this selection.*'
+                )
 
                 with gr.Row():
                     with gr.Column(scale=1, min_width=200):
@@ -1108,10 +1199,131 @@ with shared.gradio_root:
                         clip_skip = gr.Slider(label='CLIP Skip', minimum=1, maximum=flags.clip_skip_max, step=1,
                                                  value=modules.config.default_clip_skip,
                                                  info='Bypass CLIP layers to avoid overfitting (use 1 to not skip any layers, 2 is recommended).')
-                        sampler_name = gr.Dropdown(label='Sampler', choices=flags.sampler_list,
-                                                   value=modules.config.default_sampler)
-                        scheduler_name = gr.Dropdown(label='Scheduler', choices=flags.scheduler_list,
-                                                     value=modules.config.default_scheduler)
+                        with gr.Row(equal_height=True):
+                            sampler_name = gr.Dropdown(
+                                label='Sampler',
+                                choices=flags.sampler_list,
+                                value=modules.config.default_sampler,
+                                scale=12)
+                            sampler_info_button = gr.Button(
+                                value='i',
+                                size='sm',
+                                min_width=22,
+                                scale=0,
+                                elem_classes='model_info_button')
+                        sampler_info = attach_model_info(
+                            sampler_info_button,
+                            sampler_info_text)
+
+                        with gr.Row(equal_height=True):
+                            scheduler_name = gr.Dropdown(
+                                label='Scheduler',
+                                choices=flags.scheduler_list,
+                                value=modules.config.default_scheduler,
+                                scale=12)
+                            scheduler_info_button = gr.Button(
+                                value='i',
+                                size='sm',
+                                min_width=22,
+                                scale=0,
+                                elem_classes='model_info_button')
+                        scheduler_info = attach_model_info(
+                            scheduler_info_button,
+                            scheduler_info_text)
+
+                        def sampling_defaults_status(message, sampler, scheduler):
+                            return (
+                                f'**{message}**  \n'
+                                f'Sampler: `{sampler}` | Scheduler: `{scheduler}`'
+                            )
+
+                        def save_sampling_defaults_clicked(sampler, scheduler):
+                            try:
+                                config_persistence.save_sampling_defaults(
+                                    modules.config.config_path,
+                                    sampler,
+                                    scheduler,
+                                )
+                            except config_persistence.ConfigPersistenceError as exc:
+                                return sampling_defaults_status(
+                                    f'Could not save defaults: {exc}',
+                                    sampler,
+                                    scheduler,
+                                )
+
+                            modules.config.default_sampler = sampler
+                            modules.config.default_scheduler = scheduler
+                            modules.config.config_dict['default_sampler'] = sampler
+                            modules.config.config_dict['default_scheduler'] = scheduler
+                            return sampling_defaults_status(
+                                'Saved as startup default',
+                                sampler,
+                                scheduler,
+                            )
+
+                        def reset_sampling_defaults_clicked(current_sampler, current_scheduler):
+                            sampler = flags.factory_default_sampler
+                            scheduler = flags.factory_default_scheduler
+                            try:
+                                config_persistence.reset_sampling_defaults(
+                                    modules.config.config_path
+                                )
+                            except config_persistence.ConfigPersistenceError as exc:
+                                return (
+                                    gr.update(),
+                                    gr.update(),
+                                    sampling_defaults_status(
+                                        f'Could not reset defaults: {exc}',
+                                        current_sampler,
+                                        current_scheduler,
+                                    ),
+                                )
+
+                            modules.config.default_sampler = sampler
+                            modules.config.default_scheduler = scheduler
+                            modules.config.config_dict['default_sampler'] = sampler
+                            modules.config.config_dict['default_scheduler'] = scheduler
+                            return (
+                                gr.update(value=sampler),
+                                gr.update(value=scheduler),
+                                sampling_defaults_status(
+                                    'Factory defaults restored',
+                                    sampler,
+                                    scheduler,
+                                ),
+                            )
+
+                        with gr.Row():
+                            set_sampling_defaults_button = gr.Button(
+                                value='Set as default',
+                                variant='secondary')
+                            reset_sampling_defaults_button = gr.Button(
+                                value='Reset to factory defaults',
+                                variant='secondary')
+                        sampling_defaults_message = gr.Markdown(
+                            value=sampling_defaults_status(
+                                'Current startup default',
+                                modules.config.default_sampler,
+                                modules.config.default_scheduler,
+                            )
+                        )
+                        set_sampling_defaults_button.click(
+                            save_sampling_defaults_clicked,
+                            inputs=[sampler_name, scheduler_name],
+                            outputs=sampling_defaults_message,
+                            queue=False,
+                            show_progress=False)
+                        reset_sampling_defaults_button.click(
+                            reset_sampling_defaults_clicked,
+                            inputs=[sampler_name, scheduler_name],
+                            outputs=[
+                                sampler_name,
+                                scheduler_name,
+                                sampling_defaults_message,
+                            ],
+                            queue=False,
+                            show_progress=False)
+
                         vae_name = gr.Dropdown(label='VAE', choices=[modules.flags.default_vae] + modules.config.vae_filenames,
                                                      value=modules.config.default_vae, show_label=True)
 
@@ -1347,19 +1559,40 @@ with shared.gradio_root:
             preset_selection.change(preset_selection_change, inputs=[preset_selection, state_is_generating, inpaint_mode], outputs=load_data_outputs, queue=False, show_progress=True) \
                 .then(fn=style_sorter.sort_styles, inputs=style_selections, outputs=style_selections, queue=False, show_progress=False) \
                 .then(lambda: None, _js='()=>{refresh_style_localization();}') \
+                .then(base_model_changed,
+                      inputs=[base_model, refiner_model, aspect_ratios_selection, performance_selection],
+                      outputs=model_dependent_outputs,
+                      queue=False, show_progress=False) \
                 .then(inpaint_engine_state_change, inputs=[inpaint_engine_state] + enhance_inpaint_mode_ctrls, outputs=enhance_inpaint_engine_ctrls, queue=False, show_progress=False)
 
-        performance_selection.change(lambda x: [gr.update(interactive=not flags.Performance.has_restricted_features(x))] * 15 +
-                                               [gr.update(visible=not flags.Performance.has_restricted_features(x))] * 1 +
-                                               [gr.update(value=flags.Performance.has_restricted_features(x))] * 1,
-                                     inputs=performance_selection,
-                                     outputs=[
-                                         guidance_scale, sharpness, adm_scaler_end, adm_scaler_positive,
-                                         adm_scaler_negative, refiner_switch, refiner_model, sampler_name,
-                                         scheduler_name, adaptive_cfg, refiner_swap_method, guidance_mode,
-                                         pag_scale, deep_cache_profile, tomesd_profile,
-                                         negative_prompt, disable_intermediate_results
-                                     ], queue=False, show_progress=False)
+        def performance_selection_changed(performance, base_name):
+            restricted = flags.Performance.has_restricted_features(performance)
+            family = model_families.detect_model_family(
+                base_name,
+                modules.config.paths_checkpoints,
+            )
+            refiner_available = not restricted and family != model_families.FAMILY_SD1
+            updates = [gr.update(interactive=not restricted)] * 15
+            updates[5] = gr.update(interactive=refiner_available)
+            updates[6] = gr.update(interactive=refiner_available)
+            return updates + [
+                gr.update(visible=not restricted),
+                gr.update(value=restricted),
+            ]
+
+        performance_selection.change(
+            performance_selection_changed,
+            inputs=[performance_selection, base_model],
+            outputs=[
+                guidance_scale, sharpness, adm_scaler_end, adm_scaler_positive,
+                adm_scaler_negative, refiner_switch, refiner_model, sampler_name,
+                scheduler_name, adaptive_cfg, refiner_swap_method, guidance_mode,
+                pag_scale, deep_cache_profile, tomesd_profile,
+                negative_prompt, disable_intermediate_results,
+            ],
+            queue=False,
+            show_progress=False,
+        )
 
         output_format.input(lambda x: gr.update(output_format=x), inputs=output_format)
 
@@ -1441,7 +1674,19 @@ with shared.gradio_root:
 
         prompt.input(parse_meta, inputs=[prompt, state_is_generating], outputs=[prompt, generate_button, load_parameter_button], queue=False, show_progress=False)
 
-        load_parameter_button.click(modules.meta_parser.load_parameter_button_click, inputs=[prompt, state_is_generating, inpaint_mode], outputs=load_data_outputs, queue=False, show_progress=False)
+        load_parameter_button.click(
+            modules.meta_parser.load_parameter_button_click,
+            inputs=[prompt, state_is_generating, inpaint_mode],
+            outputs=load_data_outputs,
+            queue=False,
+            show_progress=False,
+        ).then(
+            base_model_changed,
+            inputs=[base_model, refiner_model, aspect_ratios_selection, performance_selection],
+            outputs=model_dependent_outputs,
+            queue=False,
+            show_progress=False,
+        )
 
         def trigger_metadata_import(file, state_is_generating):
             parameters, metadata_scheme = modules.meta_parser.read_info_from_image(file)
@@ -1455,7 +1700,11 @@ with shared.gradio_root:
             return modules.meta_parser.load_parameter_button_click(parsed_parameters, state_is_generating, inpaint_mode)
 
         metadata_import_button.click(trigger_metadata_import, inputs=[metadata_input_image, state_is_generating], outputs=load_data_outputs, queue=False, show_progress=True) \
-            .then(style_sorter.sort_styles, inputs=style_selections, outputs=style_selections, queue=False, show_progress=False)
+            .then(style_sorter.sort_styles, inputs=style_selections, outputs=style_selections, queue=False, show_progress=False) \
+            .then(base_model_changed,
+                  inputs=[base_model, refiner_model, aspect_ratios_selection, performance_selection],
+                  outputs=model_dependent_outputs,
+                  queue=False, show_progress=False)
 
         generate_button.click(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), [], True),
                               outputs=[stop_button, skip_button, generate_button, gallery, state_is_generating]) \
