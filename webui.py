@@ -16,6 +16,8 @@ import modules.gradio_hijack as grh
 import modules.model_families as model_families
 import modules.style_sorter as style_sorter
 import modules.meta_parser
+from modules.composition import EMPTY_COMPOSITION
+from modules.composition_ui import COMPOSITION_HTML, COMPOSITION_CANVAS_HTML
 import args_manager
 import copy
 import launch
@@ -57,6 +59,8 @@ def generate_clicked(task: worker.AsyncTask):
         time.sleep(0.01)
         if len(task.yields) > 0:
             flag, product = task.yields.pop(0)
+            if flag == 'error':
+                gr.Warning(product)
             if flag == 'preview':
 
                 # help bad internet connection by skipping duplicated preview
@@ -160,16 +164,18 @@ with shared.gradio_root:
     inpaint_engine_state = gr.State('empty')
     with gr.Row():
         with gr.Column(scale=2):
-            with gr.Row():
-                progress_window = grh.Image(label='Preview', show_label=True, visible=False, height=768,
-                                            elem_classes=['main_view'])
-                progress_gallery = gr.Gallery(label='Finished Images', show_label=True, object_fit='contain',
-                                              height=768, visible=False, elem_classes=['main_view', 'image_gallery'])
-            progress_html = gr.HTML(value=modules.html.make_progress_html(32, 'Progress 32%'), visible=False,
-                                    elem_id='progress-bar', elem_classes='progress-bar')
-            gallery = gr.Gallery(label='Gallery', show_label=False, object_fit='contain', visible=True, height=768,
-                                 elem_classes=['resizable_area', 'main_view', 'final_gallery', 'image_gallery'],
-                                 elem_id='final_gallery')
+            with gr.Group(elem_id='image_output_area'):
+                with gr.Row():
+                    progress_window = grh.Image(label='Preview', show_label=True, visible=False, height=768,
+                                                elem_classes=['main_view'])
+                    progress_gallery = gr.Gallery(label='Finished Images', show_label=True, object_fit='contain',
+                                                  height=768, visible=False, elem_classes=['main_view', 'image_gallery'])
+                progress_html = gr.HTML(value=modules.html.make_progress_html(32, 'Progress 32%'), visible=False,
+                                        elem_id='progress-bar', elem_classes='progress-bar')
+                gallery = gr.Gallery(label='Gallery', show_label=False, object_fit='contain', visible=True, height=768,
+                                     elem_classes=['resizable_area', 'main_view', 'final_gallery', 'image_gallery'],
+                                     elem_id='final_gallery')
+                gr.HTML(COMPOSITION_CANVAS_HTML, elem_id='composition_surface')
             with gr.Row():
                 with gr.Column(scale=17):
                     prompt = gr.Textbox(show_label=False, placeholder="Type prompt here or paste parameters.", elem_id='positive_prompt',
@@ -597,17 +603,20 @@ with shared.gradio_root:
                                 enhance_inpaint_respective_field = gr.Slider(label='Inpaint Respective Field',
                                                                              minimum=0.0, maximum=1.0, step=0.001,
                                                                              value=0.618,
-                                                                             info='The area to inpaint. '
-                                                                                  'Value 0 is same as "Only Masked" in A1111. '
-                                                                                  'Value 1 is same as "Whole Image" in A1111. '
-                                                                                  'Only used in inpaint, not used in outpaint. '
-                                                                                  '(Outpaint always use 1.0)')
+                                                                             info='Controls the context around the masked area. '
+                                                                                  'For separate objects, larger values include more of each object\'s surroundings. '
+                                                                                  'For combined masks, 0 uses only the masked area and 1 uses the whole image.')
                                 enhance_inpaint_erode_or_dilate = gr.Slider(label='Mask Erode or Dilate',
                                                                             minimum=-64, maximum=64, step=1, value=0,
                                                                             info='Positive value will make white area in the mask larger, '
                                                                                  'negative value will make white area smaller. '
                                                                                  '(default is 0, always processed before any mask invert)')
                                 enhance_mask_invert = gr.Checkbox(label='Invert Mask', value=False)
+                                enhance_separate_objects = gr.Checkbox(
+                                    label='Enhance each object separately',
+                                    value=modules.config.default_enhance_separate_objects,
+                                    info='With SAM or SAM 3, give each detected object its own detail pass. '
+                                         'More objects take longer. Inverted masks are processed together.')
 
                             gr.HTML('<a href="https://github.com/lllyasviel/Fooocus/discussions/3281" target="_blank">\U0001F4D4 Documentation</a>')
 
@@ -627,7 +636,8 @@ with shared.gradio_root:
                             enhance_inpaint_strength,
                             enhance_inpaint_respective_field,
                             enhance_inpaint_erode_or_dilate,
-                            enhance_mask_invert
+                            enhance_mask_invert,
+                            enhance_separate_objects
                         ]
 
                         enhance_inpaint_mode_ctrls += [enhance_inpaint_mode]
@@ -740,6 +750,13 @@ with shared.gradio_root:
 
                     aspect_ratios_selection.change(lambda x: None, inputs=aspect_ratios_selection, queue=False, show_progress=False, _js='(x)=>{refresh_aspect_ratios_label(x);}')
                     shared.gradio_root.load(lambda x: None, inputs=aspect_ratios_selection, queue=False, show_progress=False, _js='(x)=>{refresh_aspect_ratios_label(x);}')
+
+                with gr.Accordion(label='Compose with boxes', open=False, elem_id='composition_accordion'):
+                    gr.HTML(COMPOSITION_HTML)
+                    composition_data = gr.Textbox(value=EMPTY_COMPOSITION, show_label=False,
+                                                  elem_id='composition_data', elem_classes='composition-data')
+                    composition_data.change(fn=None, inputs=composition_data, outputs=[], queue=False,
+                                            _js='(value) => { window.fooocusComposition.load(value); return []; }')
 
                 image_number = gr.Slider(label='Image Number', minimum=1, maximum=modules.config.default_max_image_number, step=1, value=modules.config.default_image_number)
 
@@ -1519,7 +1536,15 @@ with shared.gradio_root:
                              base_model, refiner_model, refiner_switch, sampler_name, scheduler_name, vae_name,
                              seed_random, image_seed, inpaint_engine, inpaint_engine_state,
                              inpaint_mode] + enhance_inpaint_mode_ctrls + [generate_button,
-                             load_parameter_button] + freeu_ctrls + lora_ctrls
+                             load_parameter_button] + freeu_ctrls + lora_ctrls + [composition_data]
+
+        for dimension_control in (aspect_ratios_selection, overwrite_width, overwrite_height):
+            dimension_control.change(fn=None, inputs=[aspect_ratios_selection, overwrite_width, overwrite_height],
+                                     outputs=[], queue=False,
+                                     _js='(ratio, w, h) => { window.fooocusComposition.dimensions(ratio, w, h); return []; }')
+        shared.gradio_root.load(fn=None, inputs=[aspect_ratios_selection, overwrite_width, overwrite_height],
+                                outputs=[], queue=False,
+                                _js='(ratio, w, h) => { window.fooocusComposition.dimensions(ratio, w, h); return []; }')
 
         if not args_manager.args.disable_preset_selection:
             def preset_selection_change(preset, is_generating, inpaint_mode):
@@ -1557,6 +1582,8 @@ with shared.gradio_root:
                 return result
 
             preset_selection.change(preset_selection_change, inputs=[preset_selection, state_is_generating, inpaint_mode], outputs=load_data_outputs, queue=False, show_progress=True) \
+                .then(fn=lambda value: None, inputs=composition_data, outputs=[], queue=False,
+                      _js='(value) => { window.fooocusComposition.load(value, true); return [value]; }') \
                 .then(fn=style_sorter.sort_styles, inputs=style_selections, outputs=style_selections, queue=False, show_progress=False) \
                 .then(lambda: None, _js='()=>{refresh_style_localization();}') \
                 .then(base_model_changed,
@@ -1658,6 +1685,7 @@ with shared.gradio_root:
                   enhance_input_image, enhance_checkbox, enhance_uov_method, enhance_uov_processing_order,
                   enhance_uov_prompt_type]
         ctrls += enhance_ctrls
+        ctrls += [composition_data]
 
         def parse_meta(raw_prompt_txt, is_generating):
             loaded_json = None
@@ -1680,7 +1708,8 @@ with shared.gradio_root:
             outputs=load_data_outputs,
             queue=False,
             show_progress=False,
-        ).then(
+        ).then(fn=lambda value: None, inputs=composition_data, outputs=[], queue=False,
+               _js='(value) => { window.fooocusComposition.load(value, true); return [value]; }').then(
             base_model_changed,
             inputs=[base_model, refiner_model, aspect_ratios_selection, performance_selection],
             outputs=model_dependent_outputs,
@@ -1700,6 +1729,8 @@ with shared.gradio_root:
             return modules.meta_parser.load_parameter_button_click(parsed_parameters, state_is_generating, inpaint_mode)
 
         metadata_import_button.click(trigger_metadata_import, inputs=[metadata_input_image, state_is_generating], outputs=load_data_outputs, queue=False, show_progress=True) \
+            .then(fn=lambda value: None, inputs=composition_data, outputs=[], queue=False,
+                  _js='(value) => { window.fooocusComposition.load(value, true); return [value]; }') \
             .then(style_sorter.sort_styles, inputs=style_selections, outputs=style_selections, queue=False, show_progress=False) \
             .then(base_model_changed,
                   inputs=[base_model, refiner_model, aspect_ratios_selection, performance_selection],
@@ -1707,12 +1738,15 @@ with shared.gradio_root:
                   queue=False, show_progress=False)
 
         generate_button.click(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), [], True),
-                              outputs=[stop_button, skip_button, generate_button, gallery, state_is_generating]) \
+                              outputs=[stop_button, skip_button, generate_button, gallery, state_is_generating],
+                              _js='() => { window.fooocusComposition.generating(true); return []; }') \
             .then(fn=refresh_seed, inputs=[seed_random, image_seed], outputs=image_seed) \
-            .then(fn=get_task, inputs=ctrls, outputs=currentTask) \
+            .then(fn=get_task, inputs=ctrls, outputs=currentTask,
+                  _js=f'(...args) => window.fooocusComposition.submit(args, {len(ctrls)})') \
             .then(fn=generate_clicked, inputs=currentTask, outputs=[progress_html, progress_window, progress_gallery, gallery]) \
             .then(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), False),
-                  outputs=[generate_button, stop_button, skip_button, state_is_generating]) \
+                  outputs=[generate_button, stop_button, skip_button, state_is_generating],
+                  _js='() => { window.fooocusComposition.generating(false); return []; }') \
             .then(fn=update_history_link, outputs=history_link) \
             .then(fn=lambda: None, _js='playNotification').then(fn=lambda: None, _js='refresh_grid_delayed')
 
