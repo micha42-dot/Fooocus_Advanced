@@ -507,3 +507,85 @@ div:has(> #positive_prompt) {
 #inpaint_brush_color input[type=color]{
   background: none;
 }
+/* Composition controls in Settings, canvas on the main image output area. */
+.composition-data { display: none !important; }
+.composition-editor, .composition-workspace { color: var(--body-text-color); font-size: 13px; }
+.composition-editor *, .composition-editor *::before, .composition-editor *::after { box-sizing: border-box; }
+.composition-workspace * { box-sizing: border-box; }
+.composition-editor button, .composition-editor select, .composition-editor textarea,
+.composition-editor input[type="number"] {
+    color: var(--body-text-color); background: var(--input-background-fill, #fff);
+    border: 1px solid var(--border-color-primary, #888); border-radius: 6px; padding: 6px 8px;
+    font: inherit;
+}
+.composition-editor button { cursor: pointer; }
+.composition-editor button:disabled { opacity: .45; cursor: default; }
+.composition-editor button:focus-visible, .composition-editor input:focus-visible,
+.composition-editor select:focus-visible, .composition-editor textarea:focus-visible,
+.composition-box:focus-visible { outline: 2px solid #48a7e8; outline-offset: 2px; }
+.composition-toggle { display: flex; gap: 8px; align-items: center; font-weight: 600; }
+.composition-help { font-size: 12px; opacity: .8; margin: 8px 0; line-height: 1.45; }
+.composition-toolbar { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+#image_output_area { position: relative; isolation: isolate; }
+#composition_surface {
+    position: absolute !important; inset: 0 !important; padding: 0 !important; margin: 0 !important;
+    border: 0 !important; background: transparent !important; pointer-events: none; z-index: 5;
+}
+.composition-workspace {
+    position: absolute; inset: 0; display: flex; flex-direction: column; pointer-events: auto;
+    background: var(--background-fill-primary, #fff); border-radius: 8px; padding: 8px;
+}
+.composition-workspace[hidden], .composition-edit-image[hidden] { display: none !important; }
+.composition-editing .main_view, .composition-editing #progress-bar { visibility: hidden; }
+.composition-workspace-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-bottom: 8px; }
+.composition-workspace-toolbar > span { margin-right: auto; font-weight: 600; }
+.composition-workspace button, .composition-edit-image {
+    font: inherit; color: var(--body-text-color); background: var(--input-background-fill, #fff);
+    border: 1px solid var(--border-color-primary, #888); border-radius: 6px; padding: 6px 10px; cursor: pointer;
+}
+.composition-workspace button:disabled { opacity: .45; cursor: default; }
+.composition-edit-image { position: absolute; top: 10px; right: 10px; pointer-events: auto; }
+.composition-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.composition-canvas {
+    position: relative; flex: none; overflow: hidden; touch-action: none;
+    border: 1px solid var(--border-color-primary, #888); border-radius: 6px;
+    background-color: var(--background-fill-secondary, #eee);
+    background-image: linear-gradient(#8882 1px, transparent 1px), linear-gradient(90deg, #8882 1px, transparent 1px);
+    background-size: 10% 10%; user-select: none; cursor: crosshair;
+}
+.composition-reference { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.composition-reference[hidden] { display: none; }
+.composition-empty { position: absolute; inset: 35% 10%; text-align: center; opacity: .6; pointer-events: none; }
+.composition-empty[hidden] { display: none; }
+.composition-box {
+    position: absolute; display: flex; flex-direction: column; min-width: 0; min-height: 0;
+    border: 2px solid var(--box-color); background: color-mix(in srgb, var(--box-color) 16%, transparent); cursor: move;
+}
+.composition-box.selected { z-index: 2; border-width: 3px; }
+.composition-disabled .composition-box { opacity: .45; }
+.composition-box-header {
+    flex: 0 0 24px; max-height: 100%; color: #fff; background: var(--box-color); font-size: 12px;
+    line-height: 24px; padding: 0 13px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.composition-box-prompt {
+    display: block; flex: 1 1 0; min-height: 0; min-width: 0; width: 100%; height: 0; resize: none;
+    border: none; border-radius: 0; padding: 6px 9px; font: 13px/1.4 sans-serif;
+    color: var(--body-text-color, #222); background: color-mix(in srgb, var(--input-background-fill, #fff) 45%, transparent);
+    user-select: text; touch-action: auto; cursor: text; outline-offset: -2px;
+}
+.composition-box-prompt:focus { background: color-mix(in srgb, var(--input-background-fill, #fff) 80%, transparent); }
+.composition-box-prompt::placeholder { color: var(--body-text-color-subdued, #777); }
+.composition-handle { display: none; position: absolute; width: 12px; height: 12px; background: #fff; border: 2px solid var(--box-color); }
+.composition-box.selected .composition-handle { display: block; }
+.composition-handle.nw { top: 0; left: 0; cursor: nwse-resize; }
+.composition-handle.ne { top: 0; right: 0; cursor: nesw-resize; }
+.composition-handle.sw { bottom: 0; left: 0; cursor: nesw-resize; }
+.composition-handle.se { bottom: 0; right: 0; cursor: nwse-resize; }
+.composition-status { font-size: 12px; opacity: .8; margin: 7px 0; }
+.composition-field { display: block; margin: 9px 0; }
+.composition-field textarea, .composition-field select, .composition-field input[type="range"] { display: block; width: 100%; margin-top: 4px; }
+.composition-editor fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.composition-editor fieldset:disabled { opacity: .45; }
+.composition-coordinates { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
+.composition-coordinates input { display: block; width: 100%; margin-top: 3px; }
+.composition-field output { float: right; }

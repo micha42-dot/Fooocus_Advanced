@@ -1,5 +1,14 @@
 {
     "Preview": "Preview",
+    "Compose with boxes": "Compose with boxes",
+    "Enable composition": "Enable composition",
+    "+ Add Box": "+ Add Box",
+    "Remove Box": "Remove Box",
+    "Selected box": "Selected box",
+    "Box prompt": "Box prompt",
+    "Box strength": "Box strength",
+    "Edit boxes on image": "Edit boxes on image",
+    "Show image": "Show image",
     "Gallery": "Gallery",
     "Generate": "Generate",
     "Skip": "Skip",
@@ -482,5 +491,6 @@
     "mouth": "mouth",
     "hair": "hair",
     "hand": "hand",
-    "body": "body"
+    "body": "body",
+    "Enhance each object separately": "Enhance each object separately"
 }
