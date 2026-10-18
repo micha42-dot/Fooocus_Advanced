@@ -1,4 +1,5 @@
 import torch
+from modules.composition import spatial_metadata
 import ldm_patched.modules.samplers
 import ldm_patched.modules.model_management
 
@@ -57,8 +58,10 @@ def clip_separate(cond, target_model=None, target_clip=None):
     for c, px in cond:
         p = px.get('pooled_output', None)
         c, p = clip_separate_inner(c, p, target_model=target_model, target_clip=target_clip)
-        p = {} if p is None else {'pooled_output': p.clone()}
-        results.append([c, p])
+        metadata = spatial_metadata(px)
+        if p is not None:
+            metadata['pooled_output'] = p.clone()
+        results.append([c, metadata])
 
     return results
 
@@ -74,7 +77,8 @@ def clip_separate_after_preparation(cond, target_model=None, target_clip=None):
 
         c, p = clip_separate_inner(c, p, target_model=target_model, target_clip=target_clip)
 
-        result = {'model_conds': {'c_crossattn': CONDRegular(c)}}
+        result = spatial_metadata(x)
+        result['model_conds'] = {'c_crossattn': CONDRegular(c)}
 
         if p is not None:
             result['pooled_output'] = p.clone()

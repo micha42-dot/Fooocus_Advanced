@@ -646,6 +646,12 @@ default_enhance_tabs = get_config_item_or_set_default(
     validator=lambda x: isinstance(x, int) and 1 <= x <= 5,
     expected_type=int
 )
+default_enhance_separate_objects = get_config_item_or_set_default(
+    key='default_enhance_separate_objects',
+    default_value=True,
+    validator=lambda x: isinstance(x, bool),
+    expected_type=bool
+)
 default_enhance_uov_method = get_config_item_or_set_default(
     key='default_enhance_uov_method',
     default_value=modules.flags.disabled,

@@ -179,8 +179,8 @@ def clip_encode_single(clip, text, verbose=False):
 def clone_cond(conds):
     results = []
 
-    for c, p in conds:
-        p = p["pooled_output"]
+    for c, metadata in conds:
+        p = metadata["pooled_output"]
 
         if isinstance(c, torch.Tensor):
             c = c.clone()
@@ -188,7 +188,7 @@ def clone_cond(conds):
         if isinstance(p, torch.Tensor):
             p = p.clone()
 
-        results.append([c, {"pooled_output": p}])
+        results.append([c, dict(metadata, pooled_output=p)])
 
     return results
 

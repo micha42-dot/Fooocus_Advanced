@@ -12,6 +12,7 @@ from modules.flags import MetadataScheme, Performance, Steps
 from modules.flags import SAMPLERS, CIVITAI_NO_KARRAS
 from modules.hash_cache import sha256_from_cache
 from modules.util import quote, unquote, extract_styles_from_prompt, is_json, get_file_from_folder_list
+from modules.composition import EMPTY_COMPOSITION, CompositionError, serialize_composition
 
 re_param_code = r'\s*(\w[\w \-/]+):\s*("(?:\\.|[^\\"])+"|[^,]*)(?:,|$)'
 re_param = re.compile(re_param_code)
@@ -71,6 +72,13 @@ def load_parameter_button_click(raw_metadata: dict | str, is_generating: bool, i
 
     for i in range(modules.config.default_max_lora_number):
         get_lora(f'lora_combined_{i + 1}', f'LoRA {i + 1}', loaded_parameter_dict, results, performance_filename)
+
+    # Old images/presets must clear a previous layout instead of silently reusing it.
+    try:
+        results.append(serialize_composition(loaded_parameter_dict.get(
+            'composition', loaded_parameter_dict.get('Compose with boxes', EMPTY_COMPOSITION))))
+    except CompositionError:
+        results.append(EMPTY_COMPOSITION)
 
     return results
 
@@ -354,6 +362,8 @@ class A1111MetadataParser(MetadataParser):
         'deep_cache_profile': 'DeepCache',
         'tomesd_profile': 'ToMeSD',
         'tiled_detail_upscale': 'Tiled Detail Upscale',
+        'composition': 'Compose with boxes',
+        'composition_method': 'Composition Method',
         'adm_guidance': 'ADM Guidance',
         'refiner_swap_method': 'Refiner Swap Method',
         'adaptive_cfg': 'Adaptive CFG',
@@ -504,7 +514,7 @@ class A1111MetadataParser(MetadataParser):
 
         for key in ['guidance_mode', 'pag_scale', 'deep_cache_profile', 'tomesd_profile',
                     'tiled_detail_upscale', 'adaptive_cfg', 'clip_skip', 'overwrite_switch',
-                    'refiner_swap_method', 'freeu']:
+                    'refiner_swap_method', 'freeu', 'composition', 'composition_method']:
             if key in data:
                 generation_params[self.fooocus_to_a1111[key]] = data[key]
 
