@@ -44,18 +44,24 @@ def optimize_masks(masks: torch.Tensor) -> torch.Tensor:
 
 
 def generate_mask_from_image(image: np.ndarray, mask_model: str = 'sam', extras=None,
-                             sam_options: SAMOptions | None = SAMOptions) -> tuple[np.ndarray | None, int | None, int | None, int | None]:
+                             sam_options: SAMOptions | None = SAMOptions, return_instances=False):
+    """Return the union mask and counts, optionally followed by individual object masks."""
     dino_detection_count = 0
     sam_detection_count = 0
     sam_detection_on_mask_count = 0
+    instance_masks = []
+
+    def result(mask):
+        values = (mask, dino_detection_count, sam_detection_count, sam_detection_on_mask_count)
+        return (*values, instance_masks) if return_instances else values
 
     if image is None:
-        return None, dino_detection_count, sam_detection_count, sam_detection_on_mask_count
+        return result(None)
 
     if extras is None:
         extras = {}
 
-    if 'image' in image:
+    if isinstance(image, dict) and 'image' in image:
         image = image['image']
 
     if mask_model == 'sam3' and sam_options is not None:
@@ -66,6 +72,7 @@ def generate_mask_from_image(image: np.ndarray, mask_model: str = 'sam', extras=
                 prompt=sam_options.dino_prompt,
                 confidence_threshold=sam_options.dino_box_threshold,
                 max_detections=sam_options.max_detections,
+                return_instances=return_instances,
             )
         except Exception as error:
             print(f'[SAM 3] {error}')
@@ -73,14 +80,14 @@ def generate_mask_from_image(image: np.ndarray, mask_model: str = 'sam', extras=
             mask_model = 'sam'
 
     if mask_model != 'sam' or sam_options is None:
-        result = remove(
+        mask = remove(
             image,
             session=new_session(mask_model, **extras),
             only_mask=True,
             **extras
         )
 
-        return result, dino_detection_count, sam_detection_count, sam_detection_on_mask_count
+        return result(mask)
 
     detections, boxes, logits, phrases = default_groundingdino(
         image=image,
@@ -118,7 +125,7 @@ def generate_mask_from_image(image: np.ndarray, mask_model: str = 'sam', extras=
             draw = ImageDraw.Draw(debug_dino_image)
             for box in boxes.numpy():
                 draw.rectangle(box.tolist(), fill="white")
-            return np.array(debug_dino_image), dino_detection_count, sam_detection_count, sam_detection_on_mask_count
+            return result(np.array(debug_dino_image))
 
         transformed_boxes = sam_predictor.transform.apply_boxes_torch(boxes, image.shape[:2])
         masks, _, _ = sam_predictor.predict_torch(
@@ -136,9 +143,11 @@ def generate_mask_from_image(image: np.ndarray, mask_model: str = 'sam', extras=
         for obj_ind in range(sam_objects):
             mask_tensor = masks[obj_ind][0]
             final_mask_tensor += mask_tensor
+            if return_instances:
+                instance_masks.append((mask_tensor.numpy() > 0).astype(np.uint8) * 255)
             sam_detection_on_mask_count += 1
 
     final_mask_tensor = (final_mask_tensor > 0).to('cpu').numpy()
     mask_image = np.dstack((final_mask_tensor, final_mask_tensor, final_mask_tensor)) * 255
     mask_image = np.array(mask_image, dtype=np.uint8)
-    return mask_image, dino_detection_count, sam_detection_count, sam_detection_on_mask_count
+    return result(mask_image)

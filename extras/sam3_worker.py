@@ -7,7 +7,6 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
-import torch
 from PIL import Image
 
 
@@ -34,8 +33,15 @@ def combine_masks(masks, scores, image_shape, confidence_threshold=0.3, max_dete
     return union_mask, order
 
 
+def encode_mask(mask):
+    buffer = io.BytesIO()
+    Image.fromarray(np.asarray(mask, dtype=np.uint8), mode='L').save(buffer, format='PNG')
+    return base64.b64encode(buffer.getvalue()).decode('ascii')
+
+
 class SAM3Runtime:
     def __init__(self, checkpoint=None, keep_gpu=False):
+        import torch
         self.checkpoint = checkpoint
         self.keep_gpu = keep_gpu
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -55,7 +61,8 @@ class SAM3Runtime:
         self.model.eval()
         print('[SAM 3] Model loaded on CPU.')
 
-    def segment(self, image, prompt, confidence_threshold, max_detections):
+    def segment(self, image, prompt, confidence_threshold, max_detections, include_instances=False):
+        import torch
         from sam3.model.sam3_image_processor import Sam3Processor
 
         with self.lock:
@@ -81,13 +88,17 @@ class SAM3Runtime:
                     max_detections=max_detections,
                 )
 
-                mask_buffer = io.BytesIO()
-                Image.fromarray(union_mask, mode='L').save(mask_buffer, format='PNG')
-                return {
-                    'mask': base64.b64encode(mask_buffer.getvalue()).decode('ascii'),
+                result = {
+                    'mask': encode_mask(union_mask),
                     'detection_count': int(len(order)),
                     'scores': scores[order].tolist(),
                 }
+                if include_instances:
+                    selected_masks = masks.reshape((-1, image.height, image.width))[order]
+                    result['instance_masks'] = [
+                        encode_mask((mask > 0).astype(np.uint8) * 255) for mask in selected_masks
+                    ]
+                return result
             finally:
                 if not self.keep_gpu and self.model is not None:
                     self.model.to('cpu')
@@ -136,6 +147,7 @@ class SAM3RequestHandler(BaseHTTPRequestHandler):
                 prompt=prompt,
                 confidence_threshold=float(payload.get('confidence_threshold', 0.3)),
                 max_detections=int(payload.get('max_detections', 0)),
+                include_instances=bool(payload.get('include_instances', False)),
             )
             self._send_json(200, result)
         except Exception as error:

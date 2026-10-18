@@ -22,6 +22,10 @@ python extras\sam3_worker.py
 
 The worker listens only on `127.0.0.1:7866` by default. Select `sam3` as the mask generation model in Fooocus and enter a detection prompt. After each request, the worker moves SAM 3 back to CPU memory so Fooocus can reclaim the GPU.
 
+Enhance can request individual object masks using **Enhance each object separately**. Restart the worker
+after updating Fooocus to enable this feature. Older workers continue to provide a combined mask.
+Ordinary mask generation still returns the combined mask; individual masks are sent only when requested.
+
 To use a local checkpoint instead of Hugging Face authentication:
 
 ```powershell

@@ -13,7 +13,7 @@ class SAM3UnavailableError(RuntimeError):
 
 
 def generate_sam3_mask(image: np.ndarray, prompt: str, confidence_threshold: float = 0.3,
-                       max_detections: int = 0):
+                       max_detections: int = 0, return_instances=False):
     if not prompt or not prompt.strip():
         raise ValueError('SAM 3 requires a detection prompt.')
 
@@ -24,6 +24,7 @@ def generate_sam3_mask(image: np.ndarray, prompt: str, confidence_threshold: flo
         'prompt': prompt.strip(),
         'confidence_threshold': float(confidence_threshold),
         'max_detections': int(max_detections),
+        'include_instances': bool(return_instances),
     }
 
     sam3_url = getattr(args_manager.args, 'sam3_url', 'http://127.0.0.1:7866')
@@ -52,12 +53,25 @@ def generate_sam3_mask(image: np.ndarray, prompt: str, confidence_threshold: flo
     if 'error' in result:
         raise SAM3UnavailableError(result['error'])
 
-    try:
-        mask_bytes = base64.b64decode(result['mask'])
+    def decode_mask(encoded):
+        mask_bytes = base64.b64decode(encoded)
         mask = np.array(Image.open(io.BytesIO(mask_bytes)).convert('L'), dtype=np.uint8)
+        if mask.shape != image.shape[:2]:
+            raise ValueError('Mask size does not match the source image.')
+        return mask
+
+    try:
+        mask = decode_mask(result['mask'])
+        instance_masks = []
+        if return_instances:
+            if 'instance_masks' in result:
+                instance_masks = [decode_mask(value) for value in result['instance_masks']]
+            else:
+                print('[SAM 3] Worker returned a combined mask. Restart the updated worker for separate objects.')
     except Exception as error:
         raise SAM3UnavailableError(f'SAM 3 returned an invalid mask: {error}') from error
 
     mask_rgb = np.repeat(mask[:, :, None], 3, axis=2)
     detection_count = int(result.get('detection_count', 0))
-    return mask_rgb, detection_count, detection_count, detection_count
+    values = (mask_rgb, detection_count, detection_count, detection_count)
+    return (*values, instance_masks) if return_instances else values
