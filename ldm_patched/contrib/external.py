@@ -13,6 +13,7 @@ import random
 
 from PIL import Image, ImageOps, ImageSequence
 from PIL.PngImagePlugin import PngInfo
+from modules.composition import crop_control_hint
 import numpy as np
 import safetensors.torch
 
@@ -802,12 +803,15 @@ class ControlNetApplyAdvanced:
                 d = t[1].copy()
 
                 prev_cnet = d.get('control', None)
-                if prev_cnet in cnets:
-                    c_net = cnets[prev_cnet]
+                area = d.get('area')
+                cache_key = (prev_cnet, tuple(area) if area is not None else None)
+                if cache_key in cnets:
+                    c_net = cnets[cache_key]
                 else:
-                    c_net = control_net.copy().set_cond_hint(control_hint, strength, (start_percent, end_percent))
+                    regional_hint = crop_control_hint(control_hint, area)
+                    c_net = control_net.copy().set_cond_hint(regional_hint, strength, (start_percent, end_percent))
                     c_net.set_previous_controlnet(prev_cnet)
-                    cnets[prev_cnet] = c_net
+                    cnets[cache_key] = c_net
 
                 d['control'] = c_net
                 d['control_apply_to_uncond'] = False

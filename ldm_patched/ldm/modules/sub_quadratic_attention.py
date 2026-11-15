@@ -32,7 +32,7 @@ def dynamic_slice(
     sizes: List[int],
 ) -> Tensor:
     slicing = [slice(start, start + size) for start, size in zip(starts, sizes)]
-    return x[slicing]
+    return x[tuple(slicing)]
 
 class AttnChunk(NamedTuple):
     exp_values: Tensor

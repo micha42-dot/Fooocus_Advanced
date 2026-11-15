@@ -378,8 +378,8 @@ class CrossAttention(nn.Module):
 
         self.to_out = nn.Sequential(operations.Linear(inner_dim, query_dim, dtype=dtype, device=device), nn.Dropout(dropout))
 
-    def forward(self, x, context=None, value=None, mask=None):
-        q = self.to_q(x)
+    def forward(self, x, context=None, value=None, mask=None, projected_query=None):
+        q = self.to_q(x) if projected_query is None else projected_query
         context = default(context, x)
         k = self.to_k(context)
         if value is not None:
@@ -438,6 +438,22 @@ class BasicTransformerBlock(nn.Module):
 
     def forward(self, x, context=None, transformer_options={}):
         return checkpoint(self._forward, (x, context, transformer_options), self.parameters(), self.checkpoint)
+
+    def _cross_attention(self, query, context, extra_options, patches, replacements, block, transformer_block):
+        value = None
+        if 'attn2_patch' in patches:
+            value = context
+            for patch in patches['attn2_patch']:
+                query, context, value = patch(query, context, value, extra_options)
+        replace = replacements.get('attn2', {})
+        key = transformer_block if transformer_block in replace else block
+        if key in replace:
+            if value is None:
+                value = context
+            result = replace[key](self.attn2.to_q(query), self.attn2.to_k(context),
+                                  self.attn2.to_v(value), extra_options)
+            return self.attn2.to_out(result)
+        return self.attn2(query, context=context, value=value)
 
     def _forward(self, x, context=None, transformer_options={}):
         extra_options = {}
@@ -516,28 +532,33 @@ class BasicTransformerBlock(nn.Module):
                 context_attn2 = n
             else:
                 context_attn2 = context
-            value_attn2 = None
-            if "attn2_patch" in transformer_patches:
-                patch = transformer_patches["attn2_patch"]
-                value_attn2 = context_attn2
-                for p in patch:
-                    n, context_attn2, value_attn2 = p(n, context_attn2, value_attn2, extra_options)
-
-            attn2_replace_patch = transformer_patches_replace.get("attn2", {})
-            block_attn2 = transformer_block
-            if block_attn2 not in attn2_replace_patch:
-                block_attn2 = block
-
-            if block_attn2 in attn2_replace_patch:
-                if value_attn2 is None:
-                    value_attn2 = context_attn2
-                n = self.attn2.to_q(n)
-                context_attn2 = self.attn2.to_k(context_attn2)
-                value_attn2 = self.attn2.to_v(value_attn2)
-                n = attn2_replace_patch[block_attn2](n, context_attn2, value_attn2, extra_options)
-                n = self.attn2.to_out(n)
+            composition = transformer_patches.get('fooocus_composition')
+            if composition and not self.switch_temporal_ca_to_sa:
+                query = n
+                # Every text context sees the same spatial query. Project it
+                # once within this block call; never retain it between steps.
+                # Custom/query-changing hooks keep the independent call path.
+                share_query = (type(self.attn2) is CrossAttention
+                               and not transformer_patches.get('attn2_patch')
+                               and not transformer_patches_replace.get('attn2')
+                               and not self.attn2._forward_pre_hooks
+                               and not self.attn2._forward_hooks
+                               and not self.attn2.to_q._forward_pre_hooks
+                               and not self.attn2.to_q._forward_hooks
+                               and not torch.nn.modules.module._global_forward_pre_hooks
+                               and not torch.nn.modules.module._global_forward_hooks)
+                if share_query:
+                    projected_query = self.attn2.to_q(query)
+                    def attend(text):
+                        return self.attn2(query, context=text, projected_query=projected_query)
+                else:
+                    def attend(text):
+                        return self._cross_attention(query, text, extra_options, transformer_patches,
+                                                     transformer_patches_replace, block, transformer_block)
+                n = composition[0](attend, context_attn2, extra_options)
             else:
-                n = self.attn2(n, context=context_attn2, value=value_attn2)
+                n = self._cross_attention(n, context_attn2, extra_options, transformer_patches,
+                                         transformer_patches_replace, block, transformer_block)
 
         if "attn2_output_patch" in transformer_patches:
             patch = transformer_patches["attn2_output_patch"]
@@ -601,6 +622,10 @@ class SpatialTransformer(nn.Module):
         if not isinstance(context, list):
             context = [context] * len(self.transformer_blocks)
         b, c, h, w = x.shape
+        # Exact grid dimensions avoid square-root aspect-ratio guesses, including
+        # odd-sized downsampled grids in formats such as 1152 x 896.
+        if transformer_options.get('patches', {}).get('fooocus_composition'):
+            transformer_options = dict(transformer_options, spatial_shape=(h, w))
         x_in = x
         x = self.norm(x)
         if not self.use_linear:
