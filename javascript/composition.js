@@ -13,12 +13,10 @@
     let bridge = null;
     let lastSent = '';
     let ratio = 1;
-    let resolution = '1024 × 1024';
     let drag = null;
     let workspace = null;
     let stage = null;
     let outputArea = null;
-    let editButton = null;
     let editing = false;
     let busy = false;
     let resizeObserver = null;
@@ -68,28 +66,14 @@
         const visible = editing && !busy;
         workspace.hidden = !visible;
         outputArea.classList.toggle('composition-editing', visible);
-        editButton.hidden = visible || busy || !state.enabled;
-        root.querySelector('[data-action="edit"]').textContent = visible ? 'Show image' : 'Edit boxes on image';
+        const toggle = root.querySelector('[data-action="edit"]');
+        toggle.textContent = visible ? 'Show image' : 'Open canvas';
+        toggle.setAttribute('aria-expanded', String(visible));
         fitCanvas();
     }
 
     function openEditor() {
         if (busy) return;
-        // Use the visible gallery image as a reference. Never alter the saved image.
-        const images = [...outputArea.querySelectorAll('#final_gallery img')]
-            .filter(img => img.naturalWidth && img.getBoundingClientRect().width > 100
-                && img.getBoundingClientRect().height > 100 && !img.closest('.thumbnails'));
-        images.sort((a, b) => b.getBoundingClientRect().width * b.getBoundingClientRect().height
-            - a.getBoundingClientRect().width * a.getBoundingClientRect().height);
-        const reference = canvas.querySelector('.composition-reference');
-        const image = images[0];
-        if (image && Math.abs(image.naturalWidth / image.naturalHeight / ratio - 1) < .02) {
-            reference.src = image.currentSrc || image.src;
-            reference.hidden = false;
-        } else {
-            reference.hidden = true;
-            reference.removeAttribute('src');
-        }
         editing = true;
         showWorkspace();
     }
@@ -105,7 +89,6 @@
         });
         canvas.style.setProperty('--composition-ratio', String(ratio));
         canvas.classList.toggle('composition-disabled', !state.enabled);
-        canvas.querySelector('.composition-empty').hidden = state.boxes.length > 0;
         state.boxes.forEach((box, i) => {
             let node = canvas.querySelector(`[data-index="${i}"]`);
             if (!node) {
@@ -115,11 +98,23 @@
                 node.setAttribute('role', 'group');
                 const header = document.createElement('div');
                 header.className = 'composition-box-header';
-                header.textContent = `Box ${i + 1} · drag to move`;
+                const label = document.createElement('span');
+                label.textContent = `Box ${i + 1}`;
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'composition-box-remove';
+                remove.textContent = '×';
+                remove.setAttribute('aria-label', `Remove box ${i + 1}`);
+                remove.addEventListener('click', () => {
+                    if (!removeBox(Number(node.dataset.index))) return;
+                    const next = canvas.querySelector(`[data-index="${selected}"] .composition-box-remove`);
+                    (next || workspace.querySelector('[data-action="add"]')).focus({preventScroll: true});
+                });
+                header.append(label, remove);
                 node.appendChild(header);
                 const prompt = document.createElement('textarea');
                 prompt.className = 'composition-box-prompt';
-                prompt.placeholder = 'Write the prompt for this box…';
+                prompt.placeholder = 'Prompt';
                 prompt.maxLength = 2000;
                 prompt.setAttribute('aria-label', `Box ${i + 1} prompt`);
                 prompt.addEventListener('focus', () => {
@@ -146,7 +141,7 @@
             const prompt = node.querySelector('textarea');
             if (prompt.value !== box.prompt) prompt.value = box.prompt;
         });
-        role('status').textContent = `${state.boxes.length} / ${MAX_BOXES} boxes · ${resolution}${state.enabled ? '' : ' · disabled'}`;
+        canvas.setAttribute('aria-label', `Composition canvas, ${state.boxes.length} of ${MAX_BOXES} boxes`);
     }
 
     function renderFields() {
@@ -179,6 +174,17 @@
 
     function render() { renderCanvas(); renderFields(); showWorkspace(); }
 
+    function removeBox(index) {
+        if (busy || !state.boxes[index]) return false;
+        state.boxes.splice(index, 1);
+        if (selected > index) selected -= 1;
+        selected = Math.min(selected, state.boxes.length - 1);
+        if (!state.boxes.length) state.enabled = false;
+        render();
+        publish();
+        return true;
+    }
+
     function add(box) {
         if (busy || state.boxes.length >= MAX_BOXES) return;
         if (!editing) openEditor();
@@ -205,7 +211,6 @@
         canvas = workspace.querySelector('[data-role="canvas"]');
         stage = workspace.querySelector('.composition-stage');
         outputArea = app.querySelector('#image_output_area');
-        editButton = app.querySelector('#composition_edit_image');
         root.dataset.initialized = 'true';
         state = read(bridge.value); lastSent = bridge.value;
         selected = state.boxes.length ? 0 : -1;
@@ -220,18 +225,18 @@
             });
         }
         root.querySelector('[data-action="edit"]').addEventListener('click', () => {
-            if (editing) { editing = false; showWorkspace(); } else openEditor();
+            if (editing) {
+                editing = false;
+                showWorkspace();
+            } else {
+                openEditor();
+                outputArea.scrollIntoView({block: 'nearest'});
+            }
         });
         workspace.querySelector('[data-action="view"]').addEventListener('click', () => { editing = false; showWorkspace(); });
-        editButton.addEventListener('click', openEditor);
         const reset = app.querySelector('#reset_button');
         if (reset) reset.addEventListener('click', () => window.fooocusComposition.generating(false));
-        root.querySelector('[data-action="remove"]').addEventListener('click', () => {
-            if (!current()) return;
-            state.boxes.splice(selected, 1); selected = Math.min(selected, state.boxes.length - 1);
-            if (!state.boxes.length) state.enabled = false;
-            render(); publish();
-        });
+        root.querySelector('[data-action="remove"]').addEventListener('click', () => removeBox(selected));
         root.querySelector('[data-action="clear"]').addEventListener('click', () => {
             state = empty(); selected = -1; render(); publish();
         });
@@ -250,7 +255,7 @@
             constrain(current()); render(); publish();
         }));
         canvas.addEventListener('pointerdown', event => {
-            if (busy || event.button !== 0 || event.target.closest('textarea')) return;
+            if (busy || event.button !== 0 || event.target.closest('textarea, button')) return;
             const node = event.target.closest('.composition-box');
             const start = point(event);
             if (node) {
@@ -299,7 +304,7 @@
         canvas.addEventListener('pointerup', finishDrag);
         canvas.addEventListener('pointercancel', finishDrag);
         canvas.addEventListener('keydown', event => {
-            if (event.target.closest('textarea')) return;
+            if (event.target.closest('textarea, button')) return;
             const node = event.target.closest('.composition-box');
             if (!node) return;
             selected = Number(node.dataset.index);
@@ -337,11 +342,9 @@
             const numbers = String(value).match(/\d+/g) || [1024, 1024];
             const w = Number(width) > 0 ? Number(width) : Number(numbers[0]);
             const h = Number(height) > 0 ? Number(height) : Number(numbers[1]);
-            if (w > 0 && h > 0) { ratio = w / h; resolution = `${w} × ${h}`; }
-            init(); if (canvas) {
-                canvas.querySelector('.composition-reference').hidden = true;
-                renderCanvas(); fitCanvas();
-            }
+            if (w > 0 && h > 0) ratio = w / h;
+            init();
+            if (canvas) { renderCanvas(); fitCanvas(); }
         },
         generating(value) {
             init(); busy = Boolean(value);
