@@ -5,7 +5,7 @@ import math
 
 MAX_BOXES = 6
 MAX_PROMPT_LENGTH = 2000
-COMPOSITION_METHOD = 'regional-v2'
+COMPOSITION_METHOD = 'attention-v1'
 EMPTY_COMPOSITION = '{"version":1,"enabled":false,"boxes":[]}'
 SPATIAL_KEYS = ('area', 'strength', 'mask', 'mask_strength', 'set_area_to_bounds',
                 'start_percent', 'end_percent', 'timestep_start', 'timestep_end')
@@ -79,7 +79,7 @@ def validate_composition_mode(value, api_mode=False, goals=()):
 
 
 def build_box_masks(boxes, width, height):
-    """Latent masks blend the cropped regional passes into the global scene."""
+    """Full-frame masks for weighting text attention, with inward feathering."""
     import numpy as np
 
     h, w = max(1, height // 8), max(1, width // 8)
@@ -111,23 +111,6 @@ def build_box_masks(boxes, width, height):
     return background, masks
 
 
-def box_sampling_area(box, width, height):
-    """A bounded local latent window, aligned to 64 image pixels for the UNet.
-
-    The soft mask still limits influence to the requested box. Percentages allow
-    the sampler to resolve the area again if a separate refiner changes resolution.
-    """
-    h, w = max(1, height // 8), max(1, width // 8)
-    x0 = max(0, int(box['x'] * w) // 8 * 8)
-    y0 = max(0, int(box['y'] * h) // 8 * 8)
-    x1 = min(w, max(x0 + 8, math.ceil((box['x'] + box['w']) * w / 8) * 8))
-    y1 = min(h, max(y0 + 8, math.ceil((box['y'] + box['h']) * h / 8) * 8))
-    # At a non-aligned image edge, keep at least one complete UNet window.
-    x0 = max(0, min(x0, x1 - min(8, w)))
-    y0 = max(0, min(y0, y1 - min(8, h)))
-    return ('percentage', (y1 - y0) / h, (x1 - x0) / w, y0 / h, x0 / w)
-
-
 def compose_conditioning(positive, composition, width, height, encode, global_texts, pool_top_k,
                          tensor_from_numpy=None):
     boxes = active_boxes(composition)
@@ -136,28 +119,45 @@ def compose_conditioning(positive, composition, width, height, encode, global_te
     if tensor_from_numpy is None:
         import torch
         tensor_from_numpy = torch.from_numpy
+    from modules.composition_attention import CompositionAttention
     background, masks = build_box_masks(boxes, width, height)
-
-    def masked(conditions, mask, strength, area=None):
-        tensor = tensor_from_numpy(mask)
-        result = []
-        for embedding, metadata in conditions:
-            regional = dict(metadata, mask=tensor, mask_strength=strength, set_area_to_bounds=False)
-            if area is not None:
-                regional['area'] = area
-            result.append([embedding, regional])
-        return result
-
-    result = masked(positive, background, 1.0)
+    grouped = {}
+    shared_text = [s for s in global_texts[:pool_top_k] if s.strip()]
     for box, mask in zip(boxes, masks):
         # A single CLIP workload gives the object description priority. Do not add
         # Fooocus V2's global expansion to every box (it may invent other subjects).
-        text = ', '.join([box['prompt']] + [s for s in global_texts[:pool_top_k] if s.strip()])
+        text = ', '.join([box['prompt']] + shared_text)
+        if text in grouped:
+            previous_mask, previous_strength = grouped[text]
+            grouped[text] = (previous_mask * previous_strength + mask * box['strength'], 1.0)
+        else:
+            grouped[text] = (mask, box['strength'])
+    # Identical text produces identical attention. Add its weighted masks first
+    # so repeated subjects need only one encoding and one attention pass.
+    # Background still comes from the original boxes, preserving overlap weights.
+    regions = []
+    for text, (mask, strength) in grouped.items():
         conditions = encode(texts=[text], pool_top_k=1)
-        result.extend(masked(conditions, mask, box['strength'], box_sampling_area(box, width, height)))
-    return result
+        if len(conditions) != 1:
+            raise CompositionError('A box prompt must encode to one conditioning entry.')
+        regions.append((conditions[0][0], tensor_from_numpy(mask), strength))
+    attention = CompositionAttention(tensor_from_numpy(background), regions)
+    return [[embedding, dict(metadata, composition_attention=attention)] for embedding, metadata in positive]
 
 
 def spatial_metadata(metadata):
     """Retain regions across refiner swaps without carrying base-only model/control data."""
     return {key: metadata[key] for key in SPATIAL_KEYS if key in metadata}
+
+
+def crop_control_hint(hint, area):
+    """Crop an NCHW ControlNet reference to a regional latent sampling window."""
+    if area is None:
+        return hint
+    if area[0] == 'percentage':
+        height, width = hint.shape[-2] // 8, hint.shape[-1] // 8
+        h, w, y, x = (max(1, round(area[1] * height)), max(1, round(area[2] * width)),
+                      round(area[3] * height), round(area[4] * width))
+    else:
+        h, w, y, x = area
+    return hint[:, :, y * 8:(y + h) * 8, x * 8:(x + w) * 8]

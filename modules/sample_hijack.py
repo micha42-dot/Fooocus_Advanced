@@ -59,6 +59,9 @@ def clip_separate(cond, target_model=None, target_clip=None):
         p = px.get('pooled_output', None)
         c, p = clip_separate_inner(c, p, target_model=target_model, target_clip=target_clip)
         metadata = spatial_metadata(px)
+        if 'composition_attention' in px:
+            metadata['composition_attention'] = px['composition_attention'].convert(
+                lambda text: clip_separate_inner(text, None, target_model=target_model, target_clip=target_clip)[0])
         if p is not None:
             metadata['pooled_output'] = p.clone()
         results.append([c, metadata])
@@ -78,6 +81,9 @@ def clip_separate_after_preparation(cond, target_model=None, target_clip=None):
         c, p = clip_separate_inner(c, p, target_model=target_model, target_clip=target_clip)
 
         result = spatial_metadata(x)
+        if 'composition_attention' in x:
+            result['composition_attention'] = x['composition_attention'].convert(
+                lambda text: clip_separate_inner(text, None, target_model=target_model, target_clip=target_clip)[0])
         result['model_conds'] = {'c_crossattn': CONDRegular(c)}
 
         if p is not None:

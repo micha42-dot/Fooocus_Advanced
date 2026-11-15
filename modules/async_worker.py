@@ -1916,8 +1916,12 @@ def worker():
                 else:
                     print('User stopped')
                     break
+            finally:
+                # Skip/Stop bypass the normal end of this iteration. Release
+                # conditioning and its box device caches on every exit path.
+                task.pop('c', None)
+                task.pop('uc', None)
 
-            del task['c'], task['uc']  # Save memory
             execution_time = time.perf_counter() - execution_start_time
             performance_metrics.record_stage('generation_and_save', execution_time)
             print(f'Generating and saving time: {execution_time:.2f} seconds')
@@ -2149,6 +2153,7 @@ def worker():
                 traceback.print_exc()
                 task.yields.append(['finish', task.results])
             finally:
+                task.processing = False
                 performance_metrics.finish_generation(status)
                 if pid in modules.patch.patch_settings:
                     del modules.patch.patch_settings[pid]
