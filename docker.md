@@ -16,6 +16,15 @@ The docker image is based on NVIDIA CUDA 12.4 and PyTorch 2.1, see [Dockerfile](
 1. Clone this repository
 2. Run the docker container with `docker compose up`.
 
+When rebuilding an existing installation after dependency or Dockerfile changes, rebuild without the layer cache first:
+
+```sh
+docker compose build --no-cache
+docker compose up
+```
+
+Docker may otherwise reuse the old `pip install` layer. In particular, adding or changing a pin such as `Jinja2==3.1.3` in `requirements_versions.txt` alone does not replace packages in an already cached image.
+
 ### Running with Docker
 
 ```sh
@@ -85,6 +94,8 @@ When you are using `docker compose up` continuously, the container is not update
 Run `git pull` before executing `docker compose build --no-cache` to build an image with the latest Fooocus version.
 You can then start it with `docker compose up`
 
+The `--no-cache` flag is important after Python dependency changes because Docker may otherwise retain the previous pip layer and its transitive package versions.
+
 ### Import models, outputs
 
 If you want to import files from models or the outputs folder, you can add the following bind mounts in the [docker-compose.yml](docker-compose.yml) or your preferred method of running the container:
@@ -119,6 +130,8 @@ Docker specified environments are there. They are used by 'entrypoint.sh'
 |config_path|'config.txt' location|
 |config_example_path|'config_modification_tutorial.txt' location|
 |HF_MIRROR| huggingface mirror site domain| 
+|NO_PROXY|Hosts that bypass proxy handling. Keep `localhost,127.0.0.1,::1` so Gradio can complete its local startup check.| 
+|HTTP_PROXY / HTTPS_PROXY|Optional outbound proxy settings. The Compose example clears inherited values that can prevent Gradio from reaching its own local server.| 
 
 You can also use the same json key names and values explained in the 'config_modification_tutorial.txt' as the environments.
 See examples in the [docker-compose.yml](docker-compose.yml)

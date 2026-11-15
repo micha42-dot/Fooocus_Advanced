@@ -4,13 +4,15 @@ I consider Fooocus to be one of the most beautiful and elegant text-to-image too
 
 I'm cheekily calling it simply Fooocus Advanced.
 
-**Current experimental release: Fooocus Advanced 0.9.1**
+**Current experimental release: Fooocus Advanced 0.9.2**
 
 ### New features
 
+- **Compose with Boxes** lets you draw boxes on the canvas and write a prompt in each one to guide where subjects appear in a single SDXL image.
 - **Tiled SDXL Detail Upscale 2.0** for high-resolution diffusion-based detail reconstruction with balanced tile planning, seam-aware blending, low-frequency color anchoring, stable regional seeds, and automatic batching.
 - **Quality 10 (AYS)** for fast, model-free SDXL generation using a tuned 10-step Align Your Steps schedule with DPM++ 2M SDE.
 - **Optional SAM 3 integration** for more accurate object detection, masks, and Enhance workflows.
+- **Individual-object Enhance** gives each detected SAM/SAM 3 object its own crop and detail pass, improving the working resolution of small faces and hands.
 - **Modern APG, CFG++, and PAG guidance** for reducing oversaturation and improving sample quality. CFG++ includes sampler-correct renoising for the Euler and DPM++ 2M families, while PAG adds structure and detail without requiring another model.
 - **DeepCache feature reuse** for faster SDXL diffusion with configurable `conservative`, `balanced`, and `aggressive` quality/performance profiles.
 - **Optional deterministic ToMeSD acceleration** with configurable token-merging profiles for reducing UNet attention work.
@@ -24,14 +26,13 @@ I'm cheekily calling it simply Fooocus Advanced.
 
 ### Windows installation
 
-To install Fooocus Advanced, download two packages: **Fooocus Advanced** itself and [**Python Embedded**](https://github.com/micha42-dot/Fooocus_Advanced/releases/download/Experimental/python_embeded.7z), which contains the Python environment required to run Fooocus Advanced.
+To install Fooocus Advanced, download two packages: **Fooocus Advanced** itself and **Python Embedded**, which contains the Python environment required to run Fooocus Advanced.
 
 Extract both packages into the same directory. The `python_embeded` folder from the Python Embedded package must be placed next to the BAT files and the `Fooocus` folder, not inside the `Fooocus` folder. The final folder structure should look like this:
 
 ```text
 Fooocus Advanced/
 |-- Fooocus/
-|   |-- entry_with_update.py
 |   |-- launch.py
 |   |-- models/
 |   `-- modules/
@@ -44,6 +45,9 @@ Fooocus Advanced/
 ```
 
 Keep the folder names exactly as shown. The spelling `python_embeded` is intentional and is expected by the Windows launchers.
+
+You can also use 64-bit Python 3.12. In the directory containing `run.bat`, run `py -3.12 -m venv .venv`
+and `.venv\Scripts\python.exe -m pip install packaging==24.1`. The 0.9.2 Windows launchers can use this environment.
 
 Start Fooocus Advanced with `run.bat`. On its first launch, Fooocus checks the bundled Python environment, installs missing dependencies, and may download the default model. Use `run_no_download.bat` to prevent all automatic model downloads; in that mode, place an SDXL checkpoint in `Fooocus/models/checkpoints` before starting.
 
@@ -138,9 +142,89 @@ The 2.0 upscaler distributes SDXL tiles evenly across the complete image instead
 
 Before compositing, each generated tile is anchored to the source image's low-frequency color and illumination while retaining its diffusion-generated high-frequency texture. Reflection padding avoids repeated border pixels, and coordinate-derived seeds keep every region reproducible even if automatic VRAM fallback changes the batch size.
 
+### Compose with boxes
+
+Open **Settings → Compose with boxes**, between **Aspect Ratios** and **Image Number**.
+Click **Add Box** to edit the layout in the **large image output area**. Type the object prompt directly
+inside each rectangle. Drag its header to move it, or its corners to resize it.
+You can also draw on empty canvas, select boxes from the Settings list, or enter percentage coordinates.
+Use **×** in a box header to remove that box. **Remove Box** in Settings removes the selected box.
+**Clear** resets the layout. Arrow keys move a focused box, and Shift + arrows resize it.
+Adding a box enables composition. Turning **Enable composition** off keeps the layout for later use.
+**Open canvas** in Settings opens the existing layout on a blank canvas for the next generation.
+**Show image** returns to the gallery. During generation the editor is hidden so the normal preview and finished
+images remain visible. Text editing uses normal cursor keys and never moves the box.
+
+Use the main prompt for the shared scene, lighting and style, and the box prompts for individual subjects.
+For example: main prompt `a photograph in a cafe, warm evening light`, left box `a woman in a red jacket`,
+right box `a black dog sitting on the floor`. Start with strength 1.0 and two boxes.
+Up to six boxes are supported; empty prompts are ignored. Coordinates remain proportional when resolution changes.
+
+Composition uses **attention coupling**: every box shares the full image's UNet state, self-attention and
+global SDXL pooled/size conditioning. Box prompts are blended inside cross-attention using feathered masks.
+There are no separate cropped UNet passes or masked image predictions to assemble. The earlier `regional-v2`
+and `regional-v3` crop-based methods could produce a collage of separately composed scenes and have been replaced.
+The regional prompt is encoded together with the shared prompt; global Fooocus V2 expansion is not copied into
+every box. The method is recorded as `attention-v1` in the console/history. It requires **no extra model weights
+or dependencies**. Each box adds cross-attention work; speed and VRAM use need measurement on the target GPU.
+Disabled composition follows the original sampling path. Small boxes can lose precision at coarse attention
+resolutions. Boxes do not guarantee exact object outlines, counts, poses or interactions. Overlapping prompts
+are normalized and blended; uncovered areas retain the global prompt.
+Boxes with identical encoded text share one encoding and cross-attention calculation; their weighted masks
+are combined while preserving the original background coverage. Blending reuses its private accumulator
+to avoid an extra feature tensor per region. Conditioning and box caches are released after every task,
+including Skip, Stop and errors.
+For standard cross-attention, the spatial query is projected once per transformer block call and reused
+for the global and box text contexts. Attention replacements and query/module hooks retain independent
+projections. The projected query is never cached across denoising steps or model/refiner changes.
+
+Background on the technique: [Attention Couple](https://github.com/laksjdjf/attention-couple-ComfyUI).
+
+Supported for local text-to-image, including Image Prompt and subsequent Enhance passes. Disable composition
+for API generation or Vary/Upscale/Inpaint/Enhance input; these paths can change the image coordinate system.
+Regions survive joint, separate and VAE refiner swaps. The layout is saved in history and Fooocus/A1111 image
+metadata when metadata saving is enabled. Importing those settings restores the editor; older metadata and
+presets without a composition reset it. Box prompts use Translate Prompts when enabled and support wildcards.
+Negative conditioning remains global and retains its own text/pooled embeddings. Refiner swaps convert every
+box's text embedding to the target model. ControlNet references remain full-frame. Image Prompt's existing
+cross-attention replacement is used for global and regional text. DeepCache bypasses patched positive passes.
+Mask projection uses each attention layer's exact height and width, including non-square grids such as 1152 x 896.
+
+Validation: CPU mask/metadata/refiner regression tests and a standalone browser editor test are included in
+`tests/test_composition.py`, `tests/test_composition_attention.py` and `tests/test_composition_ui.cjs`.
+Attention tests exercise the actual transformer/sampler methods with a small NumPy tensor shim.
+`tests/test_composition_torch.py` additionally exercises the shipped transformer with real CPU PyTorch
+projections, normalization and scaled dot-product attention. It checks FP32/FP16/BF16, localization at
+1152 x 896, overlapping masks, Token Merging, DeepCache bypass and fresh refiner caches. A connected
+sampler/SpatialTransformer test also covers existing attention hooks, CFG 1/4, a two-image batch, linear
+and convolution projections, landscape/portrait grids and repeated calls without leaking box hooks
+into negative conditioning. Run it in the
+Fooocus Python environment with `python -m unittest tests.test_composition_torch -v`; no model weights
+are needed. These checks validate computation and integration, not generated image quality.
+Shared-query tests additionally cover manual weight casting, local/global hook fallbacks and CPU Dynamo
+graph capture with an eager backend. CUDA/Inductor execution requires separate validation.
+Actual image quality and GPU memory use still need validation on a working Fooocus/SDXL installation.
+See [the composition review](docs/composition-review.md) for findings, measurements and remaining checks.
+
+The editor's submission and completion callbacks account for Gradio 3.41's event contract: JavaScript receives
+current output values after the inputs, and frontend-only callbacks do not advance a `.then()` chain. Layout
+submission returns only inputs, and the normal backend completion step resets the Generate/Stop controls.
+
 ### Enhance - Automatic Image Upscaling + Enhancement
 
 Similar to adetailer, but based on dynamic image detection instead of specific mask detection models. All with one click!
+
+Each Enhance tab includes **Enhance each object separately** (enabled by default). With SAM or SAM 3,
+each detected object is processed sequentially in its own crop, using the tab's prompt and denoising strength.
+The **Inpaint Respective Field** slider controls extra context relative to the object size in this mode.
+One combined result is saved per tab, so multiple detections do not fill the gallery with intermediate images.
+More objects take longer, but the diffusion passes run one at a time. Disable the checkbox to use the original
+combined-mask workflow. Inverted masks and mask models without individual detections use one combined pass.
+Empty masks are skipped. Skip ends the current tab; Stop ends the job. Both retain the last completed composite.
+
+For SAM 3, restart the worker with the updated `extras/sam3_worker.py` to return individual masks.
+Older workers remain usable with combined-mask enhancement. Set `default_enhance_separate_objects` to `false`
+in `config.txt` to start with the checkbox disabled.
 
 See [documentation](https://github.com/mashb1t/Fooocus/discussions/42).
 

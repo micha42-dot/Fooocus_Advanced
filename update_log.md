@@ -1,3 +1,9 @@
+# Fooocus Advanced 0.9.2 Experimental
+
+* **Compose with Boxes** lets you draw boxes on the canvas and write a prompt in each one to guide where subjects appear in a single SDXL image.
+* Open the canvas from Settings and remove individual boxes with the × in each header. Completed images stay in the gallery.
+* Box prompts use the same SDXL scene, with shared attention calculations where compatible. Composition layouts can be restored from saved image metadata.
+
 # [2.6.5](https://github.com/mashb1t/Fooocus/releases/tag/v2.6.5)
 
 * Fix colab inpaint issue by moving an import statement
