@@ -150,6 +150,19 @@ def spatial_metadata(metadata):
     return {key: metadata[key] for key in SPATIAL_KEYS if key in metadata}
 
 
+def verify_composition_applied(positive):
+    """Detect a lost attention patch before saving an apparently composed image."""
+    attention = {metadata['composition_attention'] for _, metadata in positive
+                 if 'composition_attention' in metadata}
+    for region_attention in attention:
+        if not region_attention.applied:
+            raise CompositionError('Compose with boxes: regional prompts did not reach cross-attention. '
+                                   'Check that modules and ldm_patched are from the same Fooocus release, '
+                                   'then restart Fooocus.')
+    if attention:
+        print('[Composition] Verified: regional prompts applied in cross-attention.')
+
+
 def crop_control_hint(hint, area):
     """Crop an NCHW ControlNet reference to a regional latent sampling window."""
     if area is None:

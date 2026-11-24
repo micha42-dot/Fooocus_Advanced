@@ -127,6 +127,8 @@ class TestEnhanceWorker(unittest.TestCase):
         self.assertEqual(10, self.env['done_steps_inpainting'])
 
     def test_intermediate_diffusion_pass_is_composited_without_saving(self):
+        from modules.composition import CompositionError, compose_conditioning, verify_composition_applied
+
         image = np.ones((4, 4, 3), dtype=np.uint8)
         pipeline = types.SimpleNamespace(process_diffusion=Mock(return_value=[image]))
         save, publish = Mock(), Mock()
@@ -135,7 +137,8 @@ class TestEnhanceWorker(unittest.TestCase):
             inpaint_worker=types.SimpleNamespace(current_task=types.SimpleNamespace(post_process=lambda img: img * 3)),
             get_sampling_step_count=lambda steps, latent: steps,
             modules=types.SimpleNamespace(config=types.SimpleNamespace(default_black_out_nsfw=False)),
-            progressbar=Mock(), save_and_log=save, yield_result=publish)
+            progressbar=Mock(), save_and_log=save, yield_result=publish,
+            verify_composition_applied=verify_composition_applied)
         exec(compile(ast.Module(body=[self.process_task_node], type_ignores=[]), str(self.path), 'exec'), namespace)
         task = types.SimpleNamespace(last_stop=False, sampler_name='euler', cfg_scale=5,
                                      refiner_swap_method='joint', disable_preview=False, deep_cache_profile='off',
@@ -159,6 +162,15 @@ class TestEnhanceWorker(unittest.TestCase):
         namespace['process_task'](**kwargs)
         save.assert_called_once()
         publish.assert_called_once()
+        save.reset_mock()
+        publish.reset_mock()
+        layout = dict(version=1, enabled=True, boxes=[dict(x=0, y=0, w=.5, h=1, strength=1, prompt='fox')])
+        kwargs['positive_cond'] = compose_conditioning([[1, {}]], layout, 64, 64,
+            lambda **kw: [[2, {}]], ['scene'], 1, tensor_from_numpy=lambda x: x)
+        with self.assertRaisesRegex(CompositionError, 'did not reach cross-attention'):
+            namespace['process_task'](**kwargs)
+        save.assert_not_called()
+        publish.assert_not_called()
 
     def test_ui_and_task_parser_agree_on_enhance_field_order(self):
         ui = ast.parse((self.path.parents[1] / 'webui.py').read_text(encoding='utf-8'))

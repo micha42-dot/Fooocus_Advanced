@@ -52,4 +52,12 @@ user_path_config-deprecated.txt
 /package-lock.json
 /.coverage*
 /auth.json
+/.env
+/.env.*.tmp
 .DS_Store
+/release/
+/.agents/
+/.codex/
+/.venv/
+/.pytest_cache/
+/.ruff_cache/

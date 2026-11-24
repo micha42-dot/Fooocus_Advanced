@@ -13,12 +13,21 @@ class CompositionAttention:
         self.regions = tuple(regions)
         self._weights = {}
         self._contexts = {}
+        self._usage = {'applied': False}
+
+    @property
+    def applied(self):
+        return self._usage['applied']
 
     def convert(self, convert_embedding):
         """Rebuild text for a refiner without retaining base-model device caches."""
-        return CompositionAttention(self.background,
-                                    [(convert_embedding(text), mask, strength)
-                                     for text, mask, strength in self.regions])
+        converted = CompositionAttention(self.background,
+                                         [(convert_embedding(text), mask, strength)
+                                          for text, mask, strength in self.regions])
+        # A refiner may perform all denoising. Report actual use back to the
+        # original image conditioning even when the embedding was converted.
+        converted._usage = self._usage
+        return converted
 
     def weights(self, height, width, reference):
         import torch
@@ -60,4 +69,5 @@ class CompositionAttention:
             # The accumulator is private to this call; reuse it rather than
             # allocating another full spatial feature tensor for every box.
             result += attend(self._contexts[key]) * weights[index + 1]
+        self._usage['applied'] = True
         return result

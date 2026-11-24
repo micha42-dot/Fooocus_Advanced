@@ -23,7 +23,8 @@ try:
 except ImportError:
     rearrange = None
 
-from modules.composition import build_box_masks, compose_conditioning
+from modules.composition import (CompositionError, build_box_masks, compose_conditioning,
+                                 verify_composition_applied)
 from modules.composition_attention import CompositionAttention
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -378,6 +379,27 @@ class TestCompositionTorch(unittest.TestCase):
                                self.options(attention), 9, 9)
             self.assertIsNone(plan)
             self.assertEqual(cache.bypasses, 1)
+
+    def test_application_check_detects_lost_patch_and_tracks_refiner_only_use(self):
+        with torch.inference_mode():
+            _, x, context, layout = self.scene()
+            positive = compose_conditioning([[context, {}]], layout, 1152, 896,
+                lambda **kw: [[context, {}]], ['scene'], 1)
+            attention = positive[0][1]['composition_attention']
+            with self.assertRaisesRegex(CompositionError, 'did not reach cross-attention'):
+                verify_composition_applied(positive)
+            # Merely preparing masks must not be reported as an applied prompt.
+            attention.weights(28, 36, x)
+            with self.assertRaises(CompositionError):
+                verify_composition_applied(positive)
+            converted = attention.convert(lambda text: text.clone())
+            converted(lambda text: x.clone(), context, self.options())
+            self.assertTrue(attention.applied)
+            verify_composition_applied(positive)
+            fresh = compose_conditioning([[context, {}]], layout, 1152, 896,
+                lambda **kw: [[context, {}]], ['scene'], 1)[0][1]['composition_attention']
+            self.assertFalse(fresh.applied)
+            verify_composition_applied([[context, {}]])
 
     @unittest.skipIf(rearrange is None, 'Requires the project einops dependency.')
     def test_sampler_to_spatial_transformer_with_existing_hooks_and_cfg(self):

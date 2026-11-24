@@ -4,7 +4,7 @@ from extras.inpaint_mask import generate_mask_from_image, SAMOptions
 from modules.enhance_masks import object_context_field, prepare_enhance_masks
 from modules.composition import (EMPTY_COMPOSITION, COMPOSITION_METHOD, CompositionError, parse_composition,
                                  serialize_composition, active_boxes, validate_composition_mode,
-                                 compose_conditioning)
+                                 compose_conditioning, verify_composition_applied)
 from modules.patch import PatchSettings, patch_settings, patch_all
 from modules.guidance import (
     GUIDANCE_CFGPP,
@@ -531,6 +531,7 @@ def worker():
                 deep_cache_profile=async_task.deep_cache_profile
             )
 
+        verify_composition_applied(positive_cond)
         del positive_cond, negative_cond  # Save memory
         if inpaint_worker.current_task is not None:
             imgs = [inpaint_worker.current_task.post_process(x) for x in imgs]
