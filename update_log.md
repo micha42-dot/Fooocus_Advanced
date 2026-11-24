@@ -1,3 +1,9 @@
+# Fooocus Advanced 0.9.3 Experimental
+
+* Fix Compose with Boxes being ignored in the GitHub version by forwarding regional conditioning to the sampler's cross-attention patches.
+* Preserve the box patch when model-wide attention hooks, including Token Merging, are already active.
+* Verify that regional prompts reached cross-attention before saving the image. A missing patch produces a visible error, and successful application is confirmed in the console.
+
 # Fooocus Advanced 0.9.2 Experimental
 
 * **Compose with Boxes** lets you draw boxes on the canvas and write a prompt in each one to guide where subjects appear in a single SDXL image.

@@ -4,7 +4,7 @@ I consider Fooocus to be one of the most beautiful and elegant text-to-image too
 
 I'm cheekily calling it simply Fooocus Advanced.
 
-**Current experimental release: Fooocus Advanced 0.9.2**
+**Current experimental release: Fooocus Advanced 0.9.3**
 
 ### New features
 
