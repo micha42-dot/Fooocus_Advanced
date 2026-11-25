@@ -43,7 +43,7 @@ def parse_composition(value):
         numbers = {}
         for key in ('x', 'y', 'w', 'h', 'strength'):
             number = box.get(key, 1.0 if key == 'strength' else None)
-            if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number):
+            if isinstance(number, bool) or not isinstance(number, (int, float)) or not 0 <= number <= 3:
                 raise CompositionError(f'Box {index + 1}: invalid {key}.')
             numbers[key] = float(number)
         x, y, w, h = (numbers[k] for k in ('x', 'y', 'w', 'h'))
@@ -51,7 +51,7 @@ def parse_composition(value):
                 and x + w <= 1.000001 and y + h <= 1.000001
                 and .1 <= numbers['strength'] <= 3):
             raise CompositionError(f'Box {index + 1}: keep the box inside the canvas and strength between 0.1 and 3.')
-        normalized.append(dict(numbers, prompt=prompt.strip(), w=min(w, 1 - x), h=min(h, 1 - y)))
+        normalized.append(dict(numbers, prompt=prompt.strip(), x=min(x, 1 - w), y=min(y, 1 - h)))
     return {'version': 1, 'enabled': value.get('enabled', False), 'boxes': normalized}
 
 

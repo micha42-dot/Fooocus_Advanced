@@ -1,5 +1,4 @@
 import os
-import ssl
 import sys
 
 print('[System ARGV] ' + str(sys.argv))
@@ -14,8 +13,6 @@ os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
 if "GRADIO_SERVER_PORT" not in os.environ:
     os.environ["GRADIO_SERVER_PORT"] = "7865"
-
-ssl._create_default_https_context = ssl._create_unverified_context
 
 import platform
 import fooocus_version

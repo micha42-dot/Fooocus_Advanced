@@ -2,6 +2,7 @@
 
 import argparse
 import ast
+from contextlib import ExitStack
 import hashlib
 import io
 import json
@@ -85,6 +86,19 @@ def validate_payload(source):
         raise ValueError('Invalid Git source archive.')
 
 
+def write_assets(output, assets):
+    output.mkdir(parents=True, exist_ok=True)
+    with ExitStack() as rollback:
+        for name, content in assets.items():
+            target = output / name
+            if name == 'RELEASE-NOTES.md' and target.is_file() and target.read_bytes() == content:
+                continue  # Release notes can be authored directly in the output folder.
+            with target.open('xb') as stream:
+                rollback.callback(target.unlink)
+                stream.write(content)
+        rollback.pop_all()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--ref', default='HEAD', help='Committed Git revision to package.')
@@ -122,17 +136,11 @@ def main():
                     raise ValueError(f'Windows/source mismatch: {name}')
 
     output = ROOT / 'release' / stem
-    output.mkdir(parents=True, exist_ok=True)
     assets = {f'{stem}-Source.zip': source_bytes, f'{stem}-Windows.zip': windows_bytes}
-    # Verify both archives before writing release assets.
-    for name, content in assets.items():
-        with (output / name).open('xb') as target:
-            target.write(content)
-        print(f'{name}: {len(content):,} bytes')
-    (output / 'BUILD-INFO.json').write_bytes(build_info)
-    (output / 'RELEASE-NOTES.md').write_bytes(notes)
     checksums = [f'{hashlib.sha256(content).hexdigest()}  {name}' for name, content in sorted(assets.items())]
-    (output / 'SHA256SUMS.txt').write_text('\n'.join(checksums) + '\n', encoding='ascii')
+    assets.update({'BUILD-INFO.json': build_info, 'RELEASE-NOTES.md': notes,
+                   'SHA256SUMS.txt': ('\n'.join(checksums) + '\n').encode('ascii')})
+    write_assets(output, assets)
     print(f'Packaged Git revision {revision}')
 
 

@@ -2,9 +2,10 @@
 
 import ast
 from pathlib import Path
+import tempfile
 import types
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -26,6 +27,8 @@ class TestEnhanceWorker(unittest.TestCase):
         self.code = compile(ast.Module(body=[loop], type_ignores=[]), str(self.path), 'exec')
         self.process_task_node = next(n for n in worker.body if isinstance(n, ast.FunctionDef)
                                       and n.name == 'process_task')
+        self.log_functions = [n for n in worker.body if isinstance(n, ast.FunctionDef)
+                              and n.name in ('log_image', 'persist_last_enhancement')]
         self.masks = [np.zeros((40, 80), dtype=np.uint8) for _ in range(2)]
         self.masks[0][10:20, 5:15] = 255
         self.masks[1][10:20, 65:75] = 255
@@ -80,6 +83,58 @@ class TestEnhanceWorker(unittest.TestCase):
 
     def run_loop(self):
         exec(self.code, self.env)
+
+    def test_gallery_keeps_grid_after_grouping_finished_enhancements(self):
+        path = self.path.parents[1] / 'webui.py'
+        tree = ast.parse(path.read_text(encoding='utf-8'))
+        sort = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'sort_enhance_images')
+        namespace = {}
+        exec(compile(ast.Module(body=[sort], type_ignores=[]), str(path), 'exec'), namespace)
+        task = types.SimpleNamespace(should_enhance=True, images_to_enhance_count=3, enhance_stats={0: 1, 1: 0, 2: 1})
+        images = ['one', 'two', 'three', 'one enhanced', 'three enhanced', 'grid']
+        self.assertEqual(namespace['sort_enhance_images'](images, task),
+                         ['one', 'one enhanced', 'two', 'three', 'three enhanced', 'grid'])
+
+    def test_final_only_keeps_last_completed_tab_in_outputs(self):
+        from modules import private_logger
+
+        self.task.enhance_ctrls *= 2
+        self.task.output_format = 'png'
+        self.task.images_to_enhance_count = 1
+        self.env.update(active_enhance_tabs=2, total_count=2, all_steps=20)
+        namespace = dict(log=private_logger.log, persist_image_copy=private_logger.persist_image_copy)
+        exec(compile(ast.Module(body=self.log_functions, type_ignores=[]), str(self.path), 'exec'), namespace)
+
+        def save(async_task, imgs, persist_image, **kwargs):
+            return [namespace['log_image'](async_task, imgs[0], [('Prompt', 'prompt', 'fox')],
+                                           task={'positive': ['fox'], 'negative': ['fog']},
+                                           persist_image=persist_image)]
+
+        self.env.update(save_and_log=save, yield_result=lambda task, paths, *a, **kw: task.results.extend(paths))
+        for last_detected in (False, True):
+            with self.subTest(last_detected=last_detected), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / 'outputs'
+                temp = Path(directory) / 'temp'
+                self.task.results = []
+                self.task.pending_enhanced_image = None
+                self.env['current_task_id'] = -1
+                first, last = self.masks
+                self.env['generate_mask_from_image'] = Mock(side_effect=[
+                    (first, 1, 1, 1, [first]),
+                    (last, 1, 1, 1, [last]) if last_detected else (last * 0, 0, 0, 0, [])])
+                with patch.object(private_logger.modules.config, 'path_outputs', str(output)), \
+                     patch.object(private_logger.modules.config, 'temp_path', str(temp)), \
+                     patch.object(private_logger.args_manager.args, 'disable_image_log', False):
+                    self.run_loop()
+                    latest = Path(self.task.results[-1])
+                    self.assertTrue(latest.is_relative_to(output if last_detected else temp))
+                    encoded = latest.read_bytes()
+                    namespace['persist_last_enhancement'](self.task)
+                    namespace['persist_last_enhancement'](self.task)
+                final = Path(self.task.results[-1])
+                self.assertEqual(list(output.rglob('*.png')), [final])
+                self.assertEqual(final.read_bytes(), encoded)
+                self.assertIn('<summary>Negative</summary>fog', final.with_name('log.html').read_text(encoding='utf-8'))
 
     def test_objects_accumulate_and_only_one_composite_is_saved(self):
         self.run_loop()

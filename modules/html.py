@@ -1,3 +1,6 @@
+from html import escape
+
+
 progress_html = '''
 <div class="loader-container">
   <div class="loader"></div>
@@ -10,4 +13,4 @@ progress_html = '''
 
 
 def make_progress_html(number, text):
-    return progress_html.replace('*number*', str(number)).replace('*text*', text)
+    return progress_html.replace('*number*', escape(str(number))).replace('*text*', escape(text))

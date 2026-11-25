@@ -104,8 +104,11 @@ class TestComposition(unittest.TestCase):
         class EndLoop(Exception):
             pass
 
+        class PreviewComplete(BaseException):
+            pass
+
         for error in (None, CompositionError('empty boxes'), RuntimeError('sampling failed'),
-                      APIError('API failed'), Cancelled('cancelled')):
+                      APIError('API failed'), Cancelled('cancelled'), PreviewComplete()):
             with self.subTest(error=error):
                 task = types.SimpleNamespace(processing=True, generate_image_grid=False, yields=[], results=[])
                 pending = [task]
@@ -121,18 +124,24 @@ class TestComposition(unittest.TestCase):
                 settings = {123: object()}
                 metrics = types.SimpleNamespace(begin_generation=Mock(), finish_generation=Mock())
                 namespace = dict(time=types.SimpleNamespace(sleep=sleep), async_tasks=pending,
-                                 handler=handler, performance_metrics=metrics, CompositionError=CompositionError,
+                                 handler=handler, persist_last_enhancement=Mock(),
+                                 performance_metrics=metrics, CompositionError=CompositionError,
+                                 EarlyReturnException=PreviewComplete,
                                  external_api=types.SimpleNamespace(ExternalAPICancelled=Cancelled, ExternalAPIError=APIError),
-                                 pipeline=types.SimpleNamespace(prepare_text_encoder=Mock()),
+                                 pipeline=types.SimpleNamespace(final_clip=object(),
+                                     prepare_text_encoder=Mock(side_effect=RuntimeError('preload failed'))),
                                  traceback=types.SimpleNamespace(print_exc=Mock()), pid=123,
                                  modules=types.SimpleNamespace(patch=types.SimpleNamespace(patch_settings=settings)))
                 with self.assertRaises(EndLoop):
                     exec(code, namespace)
                 self.assertFalse(task.processing)
                 self.assertEqual(sum(flag == 'finish' for flag, _ in task.yields), 1)
+                self.assertEqual(any(flag == 'error' for flag, _ in task.yields),
+                                 error is not None and not isinstance(error, (Cancelled, PreviewComplete)))
                 self.assertEqual(settings, {})
                 metrics.finish_generation.assert_called_once_with(
-                    'complete' if error is None else 'cancelled' if isinstance(error, Cancelled) else 'error')
+                    'complete' if error is None or isinstance(error, PreviewComplete)
+                    else 'cancelled' if isinstance(error, Cancelled) else 'error')
 
 
     def test_controlnet_uses_distinct_spatial_crops_and_preserves_chains(self):
@@ -189,11 +198,16 @@ class TestComposition(unittest.TestCase):
 
     def test_invalid_inputs_are_rejected(self):
         for value in ('{bad', '[]', dict(version=2, boxes=[]), layout(x=float('nan')),
-                      layout(w=-1), layout(x=.9), layout(strength=float('inf')),
+                      layout(w=-1), layout(x=.9), layout(strength=float('inf')), layout(x=10**400),
                       layout(prompt='x' * 2001), layout(y=True), dict(enabled='false', boxes=[]),
                       dict(boxes=[layout()['boxes'][0]] * 7)):
             with self.subTest(value=str(value)[:50]), self.assertRaises(CompositionError):
                 parse_composition(value)
+
+    def test_minimum_box_at_rounded_canvas_edge_can_be_reloaded(self):
+        value = parse_composition(layout(x=.9800001, y=.9800001, w=.02, h=.02))
+        self.assertEqual(value, parse_composition(serialize_composition(value)))
+        self.assertEqual((.98, .98, .02, .02), tuple(value['boxes'][0][k] for k in ('x', 'y', 'w', 'h')))
 
     def test_disabled_or_empty_boxes_do_not_encode_or_allocate_masks(self):
         positive = [[object(), {}]]
@@ -317,11 +331,12 @@ class TestComposition(unittest.TestCase):
         class Interrupted(Exception):
             pass
 
-        for outcome in ('complete', 'skip', 'stop', 'error'):
+        for outcome in ('complete', 'enhance', 'skip', 'stop', 'error'):
             with self.subTest(outcome=outcome):
                 tasks = [dict(c=object(), uc=object(), task_seed=i, positive=['scene']) for i in range(2)]
                 async_task = types.SimpleNamespace(composition=EMPTY_COMPOSITION, image_number=2,
-                                                   steps=1, last_stop=outcome, composition_metadata=None)
+                                                   steps=1, last_stop=outcome, composition_metadata=None,
+                                                   should_enhance=outcome == 'enhance')
                 processed = []
 
                 def process(*args):
@@ -335,7 +350,7 @@ class TestComposition(unittest.TestCase):
                             raise Interrupted()
                         if outcome == 'error':
                             raise RuntimeError('sampling failed')
-                    return [], [], 1
+                    return [args[5]], [], 1
 
                 namespace = dict(tasks=tasks, async_task=async_task, progressbar=Mock(), current_progress=1,
                     time=types.SimpleNamespace(perf_counter=lambda: 0), initial_latent=None, width=1152, height=896,
@@ -353,6 +368,7 @@ class TestComposition(unittest.TestCase):
                 else:
                     exec(code, namespace)
                 self.assertEqual(processed, [0] if outcome in ('stop', 'error') else [0, 1])
+                self.assertEqual(namespace['images_to_enhance'], [0, 1] if outcome == 'enhance' else [])
                 for index in processed:
                     self.assertNotIn('c', tasks[index])
                     self.assertNotIn('uc', tasks[index])

@@ -5,10 +5,12 @@ import numpy as np
 
 def object_context_field(mask, context):
     """Translate the context slider to an object-sized crop for InpaintWorker."""
-    rows, columns = np.nonzero(mask > 0)
-    if not len(rows):
+    active = mask > 0
+    rows = np.flatnonzero(active.any(axis=1))
+    if not rows.size:
         return 0.0
-    object_size = max(int(rows.max() - rows.min() + 1), int(columns.max() - columns.min() + 1))
+    columns = np.flatnonzero(active.any(axis=0))
+    object_size = max(int(rows[-1] - rows[0] + 1), int(columns[-1] - columns[0] + 1))
     crop_size = object_size * (1.0 + 2.0 * min(1.0, max(0.0, float(context))))
     return min(1.0, crop_size / max(mask.shape))
 

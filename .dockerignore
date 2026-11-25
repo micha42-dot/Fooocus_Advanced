@@ -1,4 +1,15 @@
 __pycache__
+.git
+.env
+.env.*
+.agents
+.codex
+.aws
+.venv
+.pytest_cache
+.ruff_cache
+/release
+/python_embeded
 *.ckpt
 *.safetensors
 *.pth

@@ -42,6 +42,7 @@ class AsyncTask:
         self.tiled_upscale_tile_count = 1
         self.composition = EMPTY_COMPOSITION
         self.composition_metadata = None
+        self.pending_enhanced_image = None
 
         if len(args) == 0:
             return
@@ -240,7 +241,7 @@ def worker():
 
     from extras.censor import default_censor
     from modules.sdxl_styles import apply_style, get_random_style, fooocus_expansion, apply_arrays, random_style_name
-    from modules.private_logger import log
+    from modules.private_logger import log, persist_image_copy
     from extras.expansion import safe_str
     from modules.util import (remove_empty_str, HWC3, resize_image, get_image_shape_ceil, set_image_shape_ceil,
                               get_shape_ceil, resample_image, erode_or_dilate, parse_lora_references_from_prompt,
@@ -593,6 +594,26 @@ def worker():
             async_task.pag_scale
         )
 
+    def log_image(async_task, image, metadata, metadata_parser=None, task=None, persist_image=True):
+        path = log(image, metadata, metadata_parser, async_task.output_format, task, persist_image)
+        if async_task.images_to_enhance_count and async_task.save_final_enhanced_image_only:
+            if persist_image:
+                async_task.pending_enhanced_image = None
+            else:
+                # A later tab may skip or stop. Keep the encoded file and its history details.
+                prompts = {k: task[k] for k in ('positive', 'negative') if k in task} if task else None
+                async_task.pending_enhanced_image = (path, metadata, prompts)
+        return path
+
+    def persist_last_enhancement(async_task):
+        if async_task.pending_enhanced_image is None:
+            return
+        source, metadata, prompts = async_task.pending_enhanced_image
+        target = persist_image_copy(source, async_task.output_format, metadata, prompts)
+        async_task.results = [target if isinstance(item, str) and item == source else item
+                              for item in async_task.results]
+        async_task.pending_enhanced_image = None
+
     def save_and_log(async_task, height, imgs, task, use_expansion, width, loras, persist_image=True) -> list:
         img_paths = []
         for x in imgs:
@@ -686,7 +707,7 @@ def worker():
             d.append(('Metadata Scheme', 'metadata_scheme',
                       async_task.metadata_scheme.value if metadata_parser is not None else False))
             d.append(('Version', 'version', fooocus_version.full_version))
-            image_path = log(x, d, metadata_parser, async_task.output_format, task, persist_image)
+            image_path = log_image(async_task, x, d, metadata_parser, task, persist_image)
             img_paths.append(image_path)
             performance_metrics.record_image(image_path, x)
 
@@ -1389,7 +1410,7 @@ def worker():
                     progressbar(async_task, current_progress, 'Checking for NSFW content ...')
                     img = default_censor(img)
                 progressbar(async_task, current_progress, f'Saving image {current_task_id + 1}/{total_count} to system ...')
-                uov_image_path = log(img, d, output_format=async_task.output_format, persist_image=persist_image)
+                uov_image_path = log_image(async_task, img, d, persist_image=persist_image)
                 yield_result(async_task, uov_image_path, current_progress, async_task.black_out_nsfw, False,
                              do_not_show_finished_images=not show_intermediate_results or async_task.disable_intermediate_results)
                 return current_progress, img, prompt, negative_prompt
@@ -1906,8 +1927,10 @@ def worker():
                 current_progress = int(preparation_steps + (100 - preparation_steps) / float(all_steps) *
                                        get_sampling_step_count(async_task.steps, task_initial_latent) *
                                        (current_task_id + 1))
-                images_to_enhance += imgs
-                image_compositions.extend([async_task.composition_metadata] * len(imgs))
+                if async_task.should_enhance:
+                    images_to_enhance.extend(imgs)
+                    image_compositions.extend([async_task.composition_metadata] * len(imgs))
+                del imgs
 
             except ldm_patched.modules.model_management.InterruptProcessingException:
                 if async_task.last_stop == 'skip':
@@ -1952,6 +1975,7 @@ def worker():
         enhance_steps, _, _, _ = apply_overrides(async_task, async_task.original_steps, height, width)
         exception_result = None
         for index, img in enumerate(images_to_enhance):
+            persist_last_enhancement(async_task)
             async_task.composition_metadata = image_compositions[index] if index < len(image_compositions) else None
             async_task.enhance_stats[index] = 0
             enhancement_image_start_time = time.perf_counter()
@@ -1961,13 +1985,14 @@ def worker():
 
             if enhance_uov_before:
                 current_task_id += 1
+                results_before = len(async_task.results)
                 persist_image = not async_task.save_final_enhanced_image_only or active_enhance_tabs == 0
                 current_task_id, done_steps_inpainting, done_steps_upscaling, img, exception_result = enhance_upscale(
                     all_steps, async_task, base_progress, callback, controlnet_canny_path, controlnet_cpds_path,
                     current_task_id, denoising_strength, done_steps_inpainting, done_steps_upscaling, enhance_steps,
                     async_task.prompt, async_task.negative_prompt, final_scheduler_name, height, img, preparation_steps,
                     switch, tiled, total_count, use_expansion, use_style, use_synthetic_refiner, width, persist_image)
-                async_task.enhance_stats[index] += 1
+                async_task.enhance_stats[index] += len(async_task.results) - results_before
 
                 if exception_result == 'continue':
                     continue
@@ -2097,6 +2122,7 @@ def worker():
 
             if enhance_uov_after:
                 current_task_id += 1
+                results_before = len(async_task.results)
                 # last step in enhance, always save
                 persist_image = True
                 current_task_id, done_steps_inpainting, done_steps_upscaling, img, exception_result = enhance_upscale(
@@ -2105,7 +2131,7 @@ def worker():
                     last_enhance_prompt, last_enhance_negative_prompt, final_scheduler_name, height, img,
                     preparation_steps, switch, tiled, total_count, use_expansion, use_style, use_synthetic_refiner,
                     width, persist_image)
-                async_task.enhance_stats[index] += 1
+                async_task.enhance_stats[index] += len(async_task.results) - results_before
                 
                 if exception_result == 'continue':
                     continue
@@ -2127,37 +2153,40 @@ def worker():
             performance_metrics.begin_generation(task)
 
             try:
-                handler(task)
+                try:
+                    handler(task)
+                finally:
+                    persist_last_enhancement(task)
                 if task.generate_image_grid:
                     build_image_wall(task)
-                task.yields.append(['finish', task.results])
-                pipeline.prepare_text_encoder(async_call=True)
+            except EarlyReturnException:
+                pass  # An inpaint debug preview can also finish an Enhance job.
             except CompositionError as exc:
                 status = 'error'
-                task.processing = False
                 print(f'[Composition] {exc}')
                 task.yields.append(['error', str(exc)])
-                task.yields.append(['finish', task.results])
             except external_api.ExternalAPICancelled as exc:
                 status = 'cancelled'
-                task.processing = False
                 print(f'[External API] {exc}')
-                task.yields.append(['finish', task.results])
             except external_api.ExternalAPIError as exc:
                 status = 'error'
-                task.processing = False
                 print(f'[External API] {exc}')
-                task.yields.append(['preview', (100, f'API error: {exc}', None)])
-                task.yields.append(['finish', task.results])
-            except:
+                task.yields.append(['error', f'API error: {exc}'])
+            except Exception:
                 status = 'error'
                 traceback.print_exc()
-                task.yields.append(['finish', task.results])
+                task.yields.append(['error', 'Generation failed. See the Fooocus console for details.'])
             finally:
                 task.processing = False
+                task.yields.append(['finish', task.results])
                 performance_metrics.finish_generation(status)
                 if pid in modules.patch.patch_settings:
                     del modules.patch.patch_settings[pid]
+            if status == 'complete' and pipeline.final_clip is not None:
+                try:
+                    pipeline.prepare_text_encoder(async_call=True)
+                except Exception:
+                    traceback.print_exc()
     pass
 
 

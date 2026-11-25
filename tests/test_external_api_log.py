@@ -12,14 +12,14 @@ from modules import private_logger
 class TestExternalAPILog(unittest.TestCase):
     def test_direct_api_image_is_written_to_daily_html_log(self):
         metadata = [
-            ('Prompt', 'prompt', 'a glass city at sunrise'),
+            ('Prompt', 'prompt', 'a glass city at sunrise & <blue>'),
             ('Negative Prompt', 'negative_prompt', 'fog'),
         ]
         metadata.extend(external_api.get_generation_metadata(
             external_api.PROVIDER_FAL,
             'fal:nano-banana-2'))
         task = {
-            'positive': ['a glass city at sunrise'],
+            'positive': ['a glass city at sunrise & <blue>'],
             'negative': ['fog'],
         }
 
@@ -43,7 +43,8 @@ class TestExternalAPILog(unittest.TestCase):
                 html = log_file.read()
 
         self.assertEqual(saved_path, image_path)
-        self.assertIn('a glass city at sunrise', html)
+        self.assertEqual(2, html.count('a glass city at sunrise &amp; &lt;blue&gt;'))
+        self.assertNotIn('<blue>', html)
         self.assertIn('Nano Banana 2', html)
         self.assertIn('Local Refinement', html)
         self.assertIn('Disabled', html)

@@ -112,10 +112,10 @@ def sort_enhance_images(images, task):
         if index not in task.enhance_stats:
             continue
         target_index = walk_index + task.enhance_stats[index]
-        if walk_index < len(images) and target_index <= len(images):
-            sorted_images += images[walk_index:target_index]
+        sorted_images.extend(images[walk_index:target_index])
         walk_index += task.enhance_stats[index]
 
+    sorted_images.extend(images[walk_index:])  # The optional image grid follows the per-image results.
     return sorted_images
 
 

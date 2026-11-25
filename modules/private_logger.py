@@ -1,7 +1,9 @@
 import os
+import shutil
 import args_manager
 import modules.config
 import json
+from html import escape
 import urllib.parse
 
 from PIL import Image
@@ -48,6 +50,29 @@ def log(img, metadata, metadata_parser: MetadataParser | None = None, output_for
     if args_manager.args.disable_image_log:
         return local_temp_filename
 
+    return write_history(date_string, local_temp_filename, only_name, metadata, task)
+
+
+def persist_image_copy(source, output_format, metadata, task):
+    with open(source, 'rb') as original:
+        while True:
+            date, target, name = generate_temp_filename(folder=modules.config.path_outputs, extension=output_format)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            try:
+                destination = open(target, 'xb')
+                break
+            except FileExistsError:
+                continue
+        try:
+            with destination:
+                shutil.copyfileobj(original, destination)
+            return write_history(date, target, name, metadata, task)
+        except Exception:
+            os.unlink(target)
+            raise
+
+
+def write_history(date_string, local_temp_filename, only_name, metadata, task):
     html_name = os.path.join(os.path.dirname(local_temp_filename), 'log.html')
 
     css_styles = (
@@ -98,7 +123,8 @@ def log(img, metadata, metadata_parser: MetadataParser | None = None, output_for
 
     if middle_part == "":
         if os.path.exists(html_name):
-            existing_split = open(html_name, 'r', encoding='utf-8').read().split('<!--fooocus-log-split-->')
+            with open(html_name, 'r', encoding='utf-8') as previous:
+                existing_split = previous.read().split('<!--fooocus-log-split-->')
             if len(existing_split) == 3:
                 middle_part = existing_split[1]
             else:
@@ -109,12 +135,12 @@ def log(img, metadata, metadata_parser: MetadataParser | None = None, output_for
     item += f"<td><a href=\"{only_name}\" target=\"_blank\"><img src='{only_name}' onerror=\"this.closest('.image-container').style.display='none';\" loading='lazy'/></a><div>{only_name}</div></td>"
     item += "<td><table class='metadata'>"
     for label, key, value in metadata:
-        value_txt = str(value).replace('\n', ' </br> ')
-        item += f"<tr><td class='label'>{label}</td><td class='value'>{value_txt}</td></tr>\n"
+        value_txt = escape(str(value)).replace('\n', '<br>')
+        item += f"<tr><td class='label'>{escape(str(label))}</td><td class='value'>{value_txt}</td></tr>\n"
 
     if task is not None and 'positive' in task and 'negative' in task:
-        full_prompt_details = f"""<details><summary>Positive</summary>{', '.join(task['positive'])}</details>
-        <details><summary>Negative</summary>{', '.join(task['negative'])}</details>"""
+        full_prompt_details = f"""<details><summary>Positive</summary>{escape(', '.join(task['positive']))}</details>
+        <details><summary>Negative</summary>{escape(', '.join(task['negative']))}</details>"""
         item += f"<tr><td class='label'>Full raw prompt</td><td class='value'>{full_prompt_details}</td></tr>\n"
 
     item += "</table>"
